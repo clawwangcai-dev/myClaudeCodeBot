@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "semgrep@claude-plugins-official": false,
+    "explanatory-output-style@claude-plugins-official": false,
+    "learning-output-style@claude-plugins-official": false
+  }
+}

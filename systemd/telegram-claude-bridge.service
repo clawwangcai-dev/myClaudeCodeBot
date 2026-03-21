@@ -1,0 +1,18 @@
+[Unit]
+Description=Telegram Claude CLI Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/claudeBot
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/telegram-claude-bridge/env
+ExecStart=/usr/bin/env python3 %h/projects/claudeBot/bot.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
