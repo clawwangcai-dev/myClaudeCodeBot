@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
+
+from config import Settings
+
+
+class MediaHandlerError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class DownloadedMedia:
+    path: Path
+    mime_type: str | None
+    telegram_file_id: str
+    caption: str
+
+
+@dataclass(frozen=True)
+class VoiceTranscript:
+    media: DownloadedMedia
+    text: str
+
+
+class MediaHandler:
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._root = settings.media_store_path
+        self._root.mkdir(parents=True, exist_ok=True)
+
+    def build_image_prompt(self, media: DownloadedMedia) -> str:
+        caption_block = media.caption.strip() or "(no caption)"
+        return (
+            "The Telegram user sent an image.\n"
+            f"Image path: {media.path}\n"
+            f"MIME type: {media.mime_type or 'unknown'}\n"
+            f"Caption: {caption_block}\n\n"
+            "Please inspect the image file from the local path above and answer the user's request. "
+            "If the caption includes instructions, follow them."
+        )
+
+    def build_voice_prompt(self, transcript: VoiceTranscript) -> str:
+        return (
+            "The Telegram user sent a voice message.\n"
+            f"Audio path: {transcript.media.path}\n"
+            f"Transcription:\n{transcript.text.strip() or '(empty transcription)'}\n\n"
+            "Please respond to the user based on the transcription above."
+        )
+
+    def download(self, *, file_url: str, file_id: str, file_name: str, mime_type: str | None, caption: str) -> DownloadedMedia:
+        target_dir = self._root
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / file_name
+        try:
+            with urlopen(file_url, timeout=60) as response, target_path.open("wb") as handle:
+                shutil.copyfileobj(response, handle)
+        except HTTPError as exc:
+            raise MediaHandlerError(f"Download failed with HTTP {exc.code}") from exc
+        except URLError as exc:
+            raise MediaHandlerError(f"Download failed: {exc}") from exc
+
+        return DownloadedMedia(
+            path=target_path,
+            mime_type=mime_type,
+            telegram_file_id=file_id,
+            caption=caption,
+        )
+
+    def transcribe_voice(self, media: DownloadedMedia) -> VoiceTranscript:
+        whisper_path = shutil.which(self._settings.whisper_bin)
+        if whisper_path is None:
+            raise MediaHandlerError(
+                "未找到 whisper 可执行文件。"
+                f"\n当前配置 WHISPER_BIN={self._settings.whisper_bin}"
+                "\n如果系统已安装 whisper，请把它加入 PATH 或在 env 里设置 WHISPER_BIN 为实际路径。"
+            )
+
+        models = [self._settings.whisper_model, *self._settings.whisper_fallback_models]
+        seen: set[str] = set()
+        failures: list[str] = []
+
+        for model_name in models:
+            model = model_name.strip()
+            if not model or model in seen:
+                continue
+            seen.add(model)
+            output_dir = media.path.parent / f"{media.path.stem}-whisper-{model}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            command = [
+                whisper_path,
+                str(media.path),
+                "--model",
+                model,
+                "--output_dir",
+                str(output_dir),
+                "--output_format",
+                "json",
+                "--verbose",
+                "False",
+                "--task",
+                "transcribe",
+                "--fp16",
+                "False",
+                "--threads",
+                str(self._settings.whisper_threads),
+            ]
+            if self._settings.whisper_language:
+                command.extend(["--language", self._settings.whisper_language])
+
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=self._settings.claude_timeout_seconds,
+            )
+            if completed.returncode == 0:
+                transcript_path = output_dir / f"{media.path.stem}.json"
+                if not transcript_path.exists():
+                    failures.append(f"{model}: missing transcript file")
+                    continue
+
+                payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+                text = payload.get("text")
+                if not isinstance(text, str):
+                    failures.append(f"{model}: unexpected output")
+                    continue
+                return VoiceTranscript(media=media, text=text.strip())
+
+            detail = (
+                f"{model}: exit {completed.returncode}, "
+                f"stderr={completed.stderr.strip() or '<empty>'}, "
+                f"stdout={completed.stdout.strip() or '<empty>'}"
+            )
+            failures.append(detail)
+            if completed.returncode == -9:
+                continue
+
+        raise MediaHandlerError(
+            "whisper 转写失败。已尝试模型: "
+            f"{', '.join(seen) or '<none>'}\n"
+            + "\n".join(failures)
+        )

@@ -36,6 +36,14 @@ def detect_platform() -> str:
     raise RuntimeError(f"Unsupported platform: {system}")
 
 
+def detect_existing_command(*candidates: str) -> str | None:
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
 def config_dir_for(target: str) -> Path:
     home = Path.home()
     if target == "linux":
@@ -88,6 +96,7 @@ def ensure_env_file(target: str, config_dir: Path) -> Path:
     config_dir.mkdir(parents=True, exist_ok=True)
     env_path = config_dir / "env"
     settings_path = config_dir / "claude-settings.json"
+    whisper_bin = detect_existing_command("whisper")
 
     if not settings_path.exists():
         shutil.copyfile(CLAUDE_SETTINGS_TEMPLATE, settings_path)
@@ -98,6 +107,7 @@ def ensure_env_file(target: str, config_dir: Path) -> Path:
     env_content = textwrap.dedent(
         f"""\
         TELEGRAM_BOT_TOKEN=
+        BRIDGE_PROVIDER=claude
         CLAUDE_BIN=claude
         CLAUDE_WORKDIR={REPO_DIR}
         CLAUDE_SETTINGS_FILE={settings_path}
@@ -109,6 +119,15 @@ def ensure_env_file(target: str, config_dir: Path) -> Path:
         TELEGRAM_POLL_TIMEOUT=30
         TELEGRAM_EDIT_INTERVAL_SECONDS=1.0
         SESSION_STORE_PATH={REPO_DIR / "sessions.json"}
+        WHISPER_BIN={whisper_bin or 'whisper'}
+        WHISPER_MODEL=base
+        WHISPER_FALLBACK_MODELS=tiny
+        WHISPER_LANGUAGE=
+        WHISPER_THREADS=2
+        CODEX_BIN=codex
+        CODEX_MODEL=
+        CODEX_SANDBOX=workspace-write
+        CODEX_APPROVAL_POLICY=on-request
         BRIDGE_PATH_PREFIX={default_path_prefix(target)}
         """
     )
@@ -134,7 +153,7 @@ def install_linux(env_path: Path, *, start: bool) -> None:
     service_content = textwrap.dedent(
         f"""\
         [Unit]
-        Description=Telegram Claude CLI Bridge
+        Description=Telegram Agent CLI Bridge
         After=network-online.target
         Wants=network-online.target
 
@@ -325,7 +344,7 @@ def uninstall_service(target: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Manage the Telegram Claude bridge background service.")
+    parser = argparse.ArgumentParser(description="Manage the Telegram agent bridge background service.")
     parser.add_argument("--platform", choices=["linux", "macos", "windows"], help="Override platform detection.")
 
     subparsers = parser.add_subparsers(dest="command")

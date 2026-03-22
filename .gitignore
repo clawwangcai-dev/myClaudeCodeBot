@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
 sessions.json
+approval_prefs.json
+.telegram-media/
 .env
 firebase-debug.log

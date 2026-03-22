@@ -5,38 +5,72 @@ import queue
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
 
+from bridge_runner import RunnerError, RunnerResponse
 from config import Settings
 
 
-class ClaudeRunnerError(RuntimeError):
+class ClaudeRunnerError(RunnerError):
     pass
-
-
-@dataclass
-class ClaudeResponse:
-    session_id: str
-    text: str
-    raw: dict
-    command: list[str]
 
 
 class ClaudeRunner:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def ask_new(self, prompt: str) -> ClaudeResponse:
-        return self._run(prompt=prompt, resume_session_id=None)
+    def ask_new(
+        self,
+        prompt: str,
+        *,
+        permission_mode_override: str | None = None,
+        image_paths: list[str] | None = None,
+    ) -> RunnerResponse:
+        return self._run(
+            prompt=prompt,
+            resume_session_id=None,
+            permission_mode_override=permission_mode_override,
+        )
 
-    def ask_resume(self, session_id: str, prompt: str) -> ClaudeResponse:
-        return self._run(prompt=prompt, resume_session_id=session_id)
+    def ask_resume(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        permission_mode_override: str | None = None,
+        image_paths: list[str] | None = None,
+    ) -> RunnerResponse:
+        return self._run(
+            prompt=prompt,
+            resume_session_id=session_id,
+            permission_mode_override=permission_mode_override,
+        )
 
-    def stream_new(self, prompt: str):
-        yield from self._stream_run(prompt=prompt, resume_session_id=None)
+    def stream_new(
+        self,
+        prompt: str,
+        *,
+        permission_mode_override: str | None = None,
+        image_paths: list[str] | None = None,
+    ):
+        yield from self._stream_run(
+            prompt=prompt,
+            resume_session_id=None,
+            permission_mode_override=permission_mode_override,
+        )
 
-    def stream_resume(self, session_id: str, prompt: str):
-        yield from self._stream_run(prompt=prompt, resume_session_id=session_id)
+    def stream_resume(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        permission_mode_override: str | None = None,
+        image_paths: list[str] | None = None,
+    ):
+        yield from self._stream_run(
+            prompt=prompt,
+            resume_session_id=session_id,
+            permission_mode_override=permission_mode_override,
+        )
 
     def _build_command(
         self,
@@ -44,6 +78,7 @@ class ClaudeRunner:
         prompt: str,
         resume_session_id: str | None,
         output_format: str,
+        permission_mode_override: str | None = None,
         include_partial_messages: bool = False,
     ) -> list[str]:
         command = [
@@ -66,8 +101,9 @@ class ClaudeRunner:
         if output_format == 'stream-json':
             command.append('--verbose')
 
-        if self._settings.claude_permission_mode:
-            command.extend(['--permission-mode', self._settings.claude_permission_mode])
+        permission_mode = permission_mode_override or self._settings.claude_permission_mode
+        if permission_mode:
+            command.extend(['--permission-mode', permission_mode])
 
         if self._settings.claude_allowed_tools:
             command.append('--allowedTools')
@@ -79,11 +115,17 @@ class ClaudeRunner:
 
         return command
 
-    def _run(self, prompt: str, resume_session_id: str | None) -> ClaudeResponse:
+    def _run(
+        self,
+        prompt: str,
+        resume_session_id: str | None,
+        permission_mode_override: str | None = None,
+    ) -> RunnerResponse:
         command = self._build_command(
             prompt=prompt,
             resume_session_id=resume_session_id,
             output_format=self._settings.claude_output_format,
+            permission_mode_override=permission_mode_override,
         )
 
         try:
@@ -122,18 +164,24 @@ class ClaudeRunner:
         if not session_id:
             raise ClaudeRunnerError(f'Claude response did not include a session id: {payload}')
 
-        return ClaudeResponse(
+        return RunnerResponse(
             session_id=session_id,
             text=text.strip(),
             raw=payload,
             command=command,
         )
 
-    def _stream_run(self, prompt: str, resume_session_id: str | None):
+    def _stream_run(
+        self,
+        prompt: str,
+        resume_session_id: str | None,
+        permission_mode_override: str | None = None,
+    ):
         command = self._build_command(
             prompt=prompt,
             resume_session_id=resume_session_id,
             output_format='stream-json',
+            permission_mode_override=permission_mode_override,
             include_partial_messages=True,
         )
         process = subprocess.Popen(

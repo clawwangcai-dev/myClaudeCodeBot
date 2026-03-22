@@ -19,10 +19,11 @@ LOGGER = logging.getLogger("telegram-claude-bridge.status-web")
 def start_status_server(
     settings: Settings,
     store: SessionStore,
+    approvals,
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
 ) -> ThreadingHTTPServer:
-    handler_class = _build_handler(settings, store, runtime_state, version_info)
+    handler_class = _build_handler(settings, store, approvals, runtime_state, version_info)
     server = ThreadingHTTPServer((settings.status_web_host, settings.status_web_port), handler_class)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -37,6 +38,7 @@ def start_status_server(
 def _build_handler(
     settings: Settings,
     store: SessionStore,
+    approvals,
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
 ):
@@ -47,10 +49,12 @@ def _build_handler(
                 self._send_unauthorized()
                 return
             if parsed.path == "/api/status":
-                self._send_json(_status_payload(settings, store, runtime_state, version_info))
+                self._send_json(_status_payload(settings, store, approvals, runtime_state, version_info))
                 return
             if parsed.path == "/":
-                self._send_html(_render_html(_status_payload(settings, store, runtime_state, version_info)))
+                self._send_html(
+                    _render_html(_status_payload(settings, store, approvals, runtime_state, version_info))
+                )
                 return
             self.send_error(404, "Not Found")
 
@@ -103,6 +107,7 @@ def _is_authorized(settings: Settings, authorization_header: str | None, query: 
 def _status_payload(
     settings: Settings,
     store: SessionStore,
+    approvals,
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
 ) -> dict[str, Any]:
@@ -128,8 +133,11 @@ def _status_payload(
             "active_requests": snapshot.active_requests,
         },
         "bridge": {
+            "provider": settings.provider,
             "workdir": str(settings.claude_workdir),
             "streaming": settings.claude_streaming,
+            "approval_store_path": str(settings.approval_store_path),
+            "approve_always_chats": approvals.always_count(),
             "status_web": {
                 "enabled": settings.status_web_enabled,
                 "host": settings.status_web_host,
@@ -165,7 +173,7 @@ def _render_html(payload: dict[str, Any]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Telegram Claude Bridge</title>
+  <title>Telegram Agent Bridge</title>
   <style>
     :root {{
       color-scheme: light;
@@ -252,7 +260,7 @@ def _render_html(payload: dict[str, Any]) -> str:
 </head>
 <body>
   <main>
-    <h1>Telegram Claude Bridge</h1>
+    <h1>Telegram Agent Bridge</h1>
     <p>Local-only status page. JSON endpoint: <code>/api/status</code></p>
     <div class="grid">
       <section class="card"><div class="label">Requests</div><div class="value">{service['requests_total']}</div></section>
@@ -273,7 +281,9 @@ def _render_html(payload: dict[str, Any]) -> str:
         <h2>Version</h2>
         <div class="meta">
           <div>Git: <code>{html.escape(version['git_commit'])}</code></div>
+          <div>Provider: <code>{html.escape(version['provider'])}</code></div>
           <div>Claude: <code>{html.escape(version['claude_version'])}</code></div>
+          <div>Codex: <code>{html.escape(version['codex_version'])}</code></div>
           <div>Python: <code>{html.escape(version['python'])}</code></div>
           <div>Platform: <code>{html.escape(version['platform'])}</code></div>
         </div>
@@ -281,6 +291,7 @@ def _render_html(payload: dict[str, Any]) -> str:
       <section class="card">
         <h2>Bridge</h2>
         <div class="meta">
+          <div>Provider: <code>{html.escape(bridge['provider'])}</code></div>
           <div>Workdir: <code>{html.escape(bridge['workdir'])}</code></div>
           <div>Streaming: <code>{html.escape(str(bridge['streaming']))}</code></div>
           <div>Status web: <code>{html.escape(str(bridge['status_web']['host']))}:{bridge['status_web']['port']}</code></div>

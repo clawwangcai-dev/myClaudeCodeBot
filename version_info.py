@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,12 +31,18 @@ def get_version_snapshot(settings: Settings) -> dict[str, str]:
     repo_dir = Path(__file__).resolve().parent
     git_commit = _run_capture(["git", "rev-parse", "--short", "HEAD"], cwd=repo_dir) or "unknown"
     claude_version = _run_capture([settings.claude_bin, "--version"]) or "unknown"
+    codex_version = _run_capture([settings.codex_bin, "--version"]) or "unknown"
     return {
         "app": "telegram-claude-bridge",
         "git_commit": git_commit,
+        "provider": settings.provider,
         "python": platform.python_version(),
         "platform": platform.platform(),
         "claude_bin": settings.claude_bin,
         "claude_version": claude_version,
+        "codex_bin": settings.codex_bin,
+        "codex_version": codex_version,
+        "whisper_bin": settings.whisper_bin,
+        "whisper_resolved": shutil.which(settings.whisper_bin) or "missing",
         "executable": sys.executable,
     }
