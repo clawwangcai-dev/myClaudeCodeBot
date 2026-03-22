@@ -1,0 +1,22 @@
+{
+  "bots": [
+    {
+      "BRIDGE_NAME": "claude_bot",
+      "TELEGRAM_BOT_TOKEN": "123456:replace-me-claude",
+      "BRIDGE_PROVIDER": "claude",
+      "CLAUDE_WORKDIR": "~/projects/claude-workspace",
+      "STATUS_WEB_ENABLED": "true",
+      "STATUS_WEB_PORT": "8765"
+    },
+    {
+      "BRIDGE_NAME": "codex_bot",
+      "TELEGRAM_BOT_TOKEN": "123456:replace-me-codex",
+      "BRIDGE_PROVIDER": "codex",
+      "CLAUDE_WORKDIR": "~/projects/codex-workspace",
+      "CODEX_SANDBOX": "danger-full-access",
+      "CODEX_APPROVAL_POLICY": "never",
+      "STATUS_WEB_ENABLED": "true",
+      "STATUS_WEB_PORT": "8766"
+    }
+  ]
+}

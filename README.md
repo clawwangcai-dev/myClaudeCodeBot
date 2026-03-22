@@ -15,6 +15,7 @@ Set these variables before starting:
 
 ```bash
 export TELEGRAM_BOT_TOKEN=...
+export BOTS_CONFIG_FILE=
 export BRIDGE_PROVIDER=claude
 export CLAUDE_BIN=claude
 export CLAUDE_WORKDIR=~/projects/safe-repo
@@ -31,6 +32,7 @@ Optional:
 
 ```bash
 export SESSION_STORE_PATH=sessions.json
+export WORKDIR_STORE_PATH=chat_workdirs.json
 export TELEGRAM_POLL_TIMEOUT=30
 export TELEGRAM_EDIT_INTERVAL_SECONDS=1.0
 export TELEGRAM_API_BASE=https://api.telegram.org
@@ -71,6 +73,8 @@ python3 install_service.py
 - `/health` - Health check
 - `/version` - View version
 - `/clear` - Clear session
+- `/project` - Set a per-chat project directory
+- `/project_status` - Show the current chat project directory
 - `/approve` - Approve pending permission request
 - `/approve_always` - Always auto-approve future edit/write requests in this chat
 - `/approve_bypass` - Always auto-approve broader permissions including Bash/git in this chat
@@ -80,6 +84,8 @@ python3 install_service.py
 ### Notes
 
 - Each Telegram chat is serialized with a per-chat lock to avoid concurrent writes into the same backend session.
+- `/project ~/projects/my-new-app` binds the current Telegram chat to a specific working directory, creates it if needed, and clears the old session so the next prompt starts cleanly in that folder. For safety, the target directory must stay under the configured default `CLAUDE_WORKDIR`.
+- `/project default` removes the per-chat override and returns the chat to the default `CLAUDE_WORKDIR`.
 - Set `BRIDGE_PROVIDER=claude` to use the Claude CLI backend or `BRIDGE_PROVIDER=codex` to use the Codex CLI backend.
 - The Claude backend uses `claude -p ... --output-format json` / `stream-json`.
 - The Codex backend uses `codex exec --json` / `codex exec resume --json`.
@@ -97,6 +103,30 @@ python3 install_service.py
 - A local-only status page is enabled by default at `http://127.0.0.1:8765/` with JSON at `http://127.0.0.1:8765/api/status`.
 - If you set `STATUS_WEB_TOKEN`, the page requires either `Authorization: Bearer <token>` or `?token=<token>`.
 - Keep `CLAUDE_WORKDIR` narrow and set tool permissions conservatively before exposing this bot to real users.
+
+### Multi-Bot Mode
+
+Mode 1 is supported: multiple Telegram bots, each pinned to a fixed backend such as Claude or Codex.
+
+1. Create a config file from `~/myCodeBot/bots.example.json`.
+2. Give each bot its own `TELEGRAM_BOT_TOKEN`.
+3. Pin each bot with `BRIDGE_PROVIDER=claude` or `BRIDGE_PROVIDER=codex`.
+4. If you enable the local status web on more than one bot, each bot must use a different `STATUS_WEB_PORT`.
+
+Example:
+
+```bash
+cp ~/myCodeBot/bots.example.json ~/.config/telegram-claude-bridge/bots.json
+$EDITOR ~/.config/telegram-claude-bridge/bots.json
+```
+
+Then set this in the env file:
+
+```bash
+BOTS_CONFIG_FILE=~/.config/telegram-claude-bridge/bots.json
+```
+
+When `BOTS_CONFIG_FILE` is set, the bridge starts one polling worker per bot entry. For multi-bot mode, session, approval, workdir, and media stores default to separate `data/<bot-name>/...` paths automatically unless you override them per bot.
 
 ### Service Install
 
@@ -161,6 +191,7 @@ loginctl enable-linger "$USER"
 
 ```bash
 export TELEGRAM_BOT_TOKEN=...
+export BOTS_CONFIG_FILE=
 export BRIDGE_PROVIDER=claude
 export CLAUDE_BIN=claude
 export CLAUDE_WORKDIR=~/projects/safe-repo
@@ -177,6 +208,7 @@ export CLAUDE_STREAMING=true
 
 ```bash
 export SESSION_STORE_PATH=sessions.json
+export WORKDIR_STORE_PATH=chat_workdirs.json
 export TELEGRAM_POLL_TIMEOUT=30
 export TELEGRAM_EDIT_INTERVAL_SECONDS=1.0
 export TELEGRAM_API_BASE=https://api.telegram.org
@@ -217,6 +249,8 @@ python3 install_service.py
 - `/health` - 健康检查
 - `/version` - 查看版本
 - `/clear` - 清除会话
+- `/project` - 设置当前 chat 的项目目录
+- `/project_status` - 查看当前 chat 的项目目录
 - `/approve` - 批准待处理的权限请求
 - `/approve_always` - 当前 chat 后续自动批准编辑/写入权限请求
 - `/approve_bypass` - 当前 chat 后续自动批准更高权限请求，包括 Bash/git
@@ -226,6 +260,8 @@ python3 install_service.py
 ### 注意事项
 
 - 每个 Telegram 聊天使用独立锁进行序列化，避免对同一后端会话的并发写入。
+- `/project ~/projects/my-new-app` 会把当前 Telegram chat 绑定到指定工作目录；目录不存在时会自动创建，同时清除旧会话，确保下一条请求从这个目录重新开始。为了安全，目标目录必须位于默认 `CLAUDE_WORKDIR` 范围内。
+- `/project default` 会移除当前 chat 的目录覆盖，恢复使用默认的 `CLAUDE_WORKDIR`。
 - 设置 `BRIDGE_PROVIDER=claude` 使用 Claude CLI 后端；设置 `BRIDGE_PROVIDER=codex` 使用 Codex CLI 后端。
 - Claude 后端使用 `claude -p ... --output-format json` / `stream-json`。
 - Codex 后端使用 `codex exec --json` / `codex exec resume --json`。
@@ -243,6 +279,30 @@ python3 install_service.py
 - 默认启用本地状态页面：`http://127.0.0.1:8765/`，JSON 接口：`http://127.0.0.1:8765/api/status`。
 - 如果设置了 `STATUS_WEB_TOKEN`，访问页面需要 `Authorization: Bearer <token>` 或 `?token=<token>`。
 - 在将此机器人暴露给真实用户之前，请将 `CLAUDE_WORKDIR` 限制在狭窄范围，并保守地设置工具权限。
+
+### 多 Bot 模式
+
+现在支持模式 1：多个 Telegram bot，同时运行，并且每个 bot 固定绑定一个后端，例如 Claude 或 Codex。
+
+1. 参考 `~/myCodeBot/bots.example.json` 创建配置文件。
+2. 给每个 bot 配置独立的 `TELEGRAM_BOT_TOKEN`。
+3. 通过 `BRIDGE_PROVIDER=claude` 或 `BRIDGE_PROVIDER=codex` 固定每个 bot 的后端。
+4. 如果多个 bot 都启用本地状态页，就必须为每个 bot 配置不同的 `STATUS_WEB_PORT`。
+
+示例：
+
+```bash
+cp ~/myCodeBot/bots.example.json ~/.config/telegram-claude-bridge/bots.json
+$EDITOR ~/.config/telegram-claude-bridge/bots.json
+```
+
+然后在 env 文件里设置：
+
+```bash
+BOTS_CONFIG_FILE=~/.config/telegram-claude-bridge/bots.json
+```
+
+设置了 `BOTS_CONFIG_FILE` 后，bridge 会按配置文件中的每个 bot 启动一个独立 polling worker。多 bot 模式下，会话、审批、项目目录和媒体文件默认会自动分离到 `data/<bot-name>/...` 路径；如果你需要，也可以在每个 bot 条目里单独覆盖这些路径。
 
 ### 服务安装
 

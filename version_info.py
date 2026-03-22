@@ -34,6 +34,7 @@ def get_version_snapshot(settings: Settings) -> dict[str, str]:
     codex_version = _run_capture([settings.codex_bin, "--version"]) or "unknown"
     return {
         "app": "telegram-claude-bridge",
+        "bridge_name": settings.name,
         "git_commit": git_commit,
         "provider": settings.provider,
         "python": platform.python_version(),

@@ -6,6 +6,8 @@ import re
 import threading
 import time
 from collections import defaultdict
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -14,13 +16,15 @@ from urllib.request import Request, urlopen
 from approval_state import ApprovalState, PendingApproval
 from bridge_runner import BridgeRunner, RunnerError, RunnerResponse
 from claude_runner import format_text_reply
-from config import Settings, load_settings
+from config import Settings, load_all_settings
+from codex_usage import load_codex_usage
 from media_handler import DownloadedMedia, MediaHandler, MediaHandlerError
 from runtime_state import BridgeRuntimeState
 from runner_factory import build_runner
 from session_store import SessionStore
 from status_web import start_status_server
 from version_info import get_version_snapshot
+from workdir_store import WorkdirStore
 
 
 logging.basicConfig(
@@ -58,6 +62,7 @@ class TelegramBot:
         runtime_state: BridgeRuntimeState,
         version_info: dict[str, str],
         approvals: ApprovalState,
+        workdirs: WorkdirStore,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -66,6 +71,7 @@ class TelegramBot:
         self._runtime_state = runtime_state
         self._version_info = version_info
         self._approvals = approvals
+        self._workdirs = workdirs
         self._offset = 0
         self._chat_locks: defaultdict[int, threading.Lock] = defaultdict(threading.Lock)
 
@@ -74,12 +80,53 @@ class TelegramBot:
 
     def _help_text(self) -> str:
         return (
+            f"bot: {self._settings.name}\n"
             f"Telegram 已连接到本机 {self._provider_label()} 后端。\n"
             f"直接发文本即可转发到 {self._provider_label()}。\n"
             "也支持图片和语音消息。\n"
-            "命令: /help /status /health /version /clear /approve /deny "
+            "命令: /help /status /health /version /clear /project /project_status /approve /deny "
             "/approve_always /approve_bypass /approve_manual"
         )
+
+    def _build_status_text(self, chat_id: int) -> str:
+        record = self._store.get(chat_id)
+        effective_workdir = self._effective_workdir(chat_id)
+        project_override = self._workdirs.get(chat_id)
+        base_lines = [
+            "当前没有绑定会话。"
+            if record is None
+            else "当前会话状态:",
+            f"bot: {self._settings.name}",
+            f"provider: {self._provider_label()}",
+            f"workdir: {effective_workdir}" if record is None else f"cwd: {record.cwd}",
+            f"streaming: {self._settings.claude_streaming}",
+            f"project_override: {project_override or 'off'}",
+            f"pending_approval: {'yes' if self._approvals.get(chat_id) else 'no'}",
+            f"approve_always: {self._approvals.get_always_mode(chat_id) or 'off'}",
+        ]
+        if record is not None:
+            base_lines.insert(1, f"session_id: {record.session_id}")
+            base_lines.insert(3, f"updated_at: {record.updated_at}")
+
+        if self._settings.provider == "codex" and record is not None:
+            usage = load_codex_usage(record.session_id)
+            if usage is None:
+                base_lines.append("codex_usage: unavailable")
+            else:
+                base_lines.extend(
+                    [
+                        f"codex_total_tokens: {usage.total_tokens}",
+                        f"codex_input_tokens: {usage.input_tokens}",
+                        f"codex_cached_input_tokens: {usage.cached_input_tokens}",
+                        f"codex_output_tokens: {usage.output_tokens}",
+                        f"codex_reasoning_output_tokens: {usage.reasoning_output_tokens}",
+                        f"codex_plan: {usage.plan_type or 'unknown'}",
+                        f"codex_primary_used_percent: {usage.primary_used_percent if usage.primary_used_percent is not None else 'unknown'}",
+                        f"codex_secondary_used_percent: {usage.secondary_used_percent if usage.secondary_used_percent is not None else 'unknown'}",
+                    ]
+                )
+
+        return "\n".join(base_lines)
 
     def run_forever(self) -> None:
         LOGGER.info("Starting Telegram polling against %s", self._settings.telegram_api_base)
@@ -158,29 +205,7 @@ class TelegramBot:
             return
 
         if text.startswith("/status"):
-            record = self._store.get(chat_id)
-            if record is None:
-                self._send_message(
-                    chat_id,
-                    "当前没有绑定会话。\n"
-                    f"provider: {self._provider_label()}\n"
-                    f"workdir: {self._settings.claude_workdir}\n"
-                    f"streaming: {self._settings.claude_streaming}\n"
-                    f"pending_approval: {'yes' if self._approvals.get(chat_id) else 'no'}\n"
-                    f"approve_always: {self._approvals.get_always_mode(chat_id) or 'off'}",
-                )
-            else:
-                self._send_message(
-                    chat_id,
-                    "当前会话状态:\n"
-                    f"session_id: {record.session_id}\n"
-                    f"provider: {self._provider_label()}\n"
-                    f"cwd: {record.cwd}\n"
-                    f"updated_at: {record.updated_at}\n"
-                    f"streaming: {self._settings.claude_streaming}\n"
-                    f"pending_approval: {'yes' if self._approvals.get(chat_id) else 'no'}\n"
-                    f"approve_always: {self._approvals.get_always_mode(chat_id) or 'off'}",
-                )
+            self._send_message(chat_id, self._build_status_text(chat_id))
             return
 
         if text.startswith("/health"):
@@ -197,6 +222,14 @@ class TelegramBot:
                 "已清除当前会话。" if self._store.clear(chat_id) else "当前没有可清除的会话。",
             )
             self._approvals.clear(chat_id)
+            return
+
+        if text.startswith("/project_status"):
+            self._send_message(chat_id, self._build_project_status_text(chat_id))
+            return
+
+        if text.startswith("/project"):
+            self._dispatch_project_command(chat_id, text)
             return
 
         if text.startswith("/approve_bypass") or text.startswith("/approve-bypass"):
@@ -352,15 +385,17 @@ class TelegramBot:
 
         try:
             record = self._store.get(chat_id)
+            runner = self._runner_for_chat(chat_id)
+            workdir = str(self._effective_workdir(chat_id))
             if record is None:
-                response = self._runner.ask_new(prompt, image_paths=image_paths)
+                response = runner.ask_new(prompt, image_paths=image_paths)
             else:
-                response = self._runner.ask_resume(record.session_id, prompt, image_paths=image_paths)
+                response = runner.ask_resume(record.session_id, prompt, image_paths=image_paths)
 
             self._store.set(
                 chat_id=chat_id,
                 session_id=response.session_id,
-                cwd=str(self._settings.claude_workdir),
+                cwd=workdir,
             )
             for part in format_text_reply(response.text):
                 self._send_message(chat_id, part)
@@ -397,10 +432,12 @@ class TelegramBot:
         self._runtime_state.request_started()
 
         try:
+            runner = self._runner_for_chat(chat_id)
+            workdir = str(self._effective_workdir(chat_id))
             if record is None:
-                stream = self._runner.stream_new(text, image_paths=image_paths)
+                stream = runner.stream_new(text, image_paths=image_paths)
             else:
-                stream = self._runner.stream_resume(record.session_id, text, image_paths=image_paths)
+                stream = runner.stream_resume(record.session_id, text, image_paths=image_paths)
 
             for update in stream:
                 if update.get("session_id"):
@@ -424,7 +461,7 @@ class TelegramBot:
                 self._store.set(
                     chat_id=chat_id,
                     session_id=final_session_id,
-                    cwd=str(self._settings.claude_workdir),
+                    cwd=workdir,
                 )
 
             parts = format_text_reply(latest_text)
@@ -526,6 +563,7 @@ class TelegramBot:
         approval = self._approvals.set(
             chat_id=chat_id,
             session_id=session_id,
+            cwd=str(self._effective_workdir(chat_id)),
             original_prompt=original_prompt,
             permission_mode=permission_mode,
             assistant_message=assistant_text,
@@ -598,7 +636,7 @@ class TelegramBot:
                 self._store.set(
                     chat_id=chat_id,
                     session_id=response.session_id,
-                    cwd=str(self._settings.claude_workdir),
+                    cwd=approval.cwd,
                 )
             for part in format_text_reply(response.text):
                 self._send_message(chat_id, part)
@@ -616,15 +654,16 @@ class TelegramBot:
                 self._send_message(chat_id, part)
 
     def _continue_after_approval(self, approval: PendingApproval) -> RunnerResponse:
+        runner = self._runner_for_workdir(Path(approval.cwd))
         if self._settings.claude_streaming:
             if approval.session_id:
-                updates = self._runner.stream_resume(
+                updates = runner.stream_resume(
                     approval.session_id,
                     APPROVAL_CONTINUE_PROMPT,
                     permission_mode_override=approval.permission_mode,
                 )
             else:
-                updates = self._runner.stream_new(
+                updates = runner.stream_new(
                     approval.original_prompt,
                     permission_mode_override=approval.permission_mode,
                 )
@@ -644,15 +683,107 @@ class TelegramBot:
             )
 
         if approval.session_id:
-            return self._runner.ask_resume(
+            return runner.ask_resume(
                 approval.session_id,
                 APPROVAL_CONTINUE_PROMPT,
                 permission_mode_override=approval.permission_mode,
             )
 
-        return self._runner.ask_new(
+        return runner.ask_new(
             approval.original_prompt,
             permission_mode_override=approval.permission_mode,
+        )
+
+    def _effective_workdir(self, chat_id: int) -> Path:
+        override = self._workdirs.get(chat_id)
+        if override:
+            return Path(override)
+        return self._settings.claude_workdir
+
+    def _runner_for_chat(self, chat_id: int) -> BridgeRunner:
+        return self._runner_for_workdir(self._effective_workdir(chat_id))
+
+    def _runner_for_workdir(self, workdir: Path) -> BridgeRunner:
+        return build_runner(replace(self._settings, claude_workdir=workdir))
+
+    def _build_project_status_text(self, chat_id: int) -> str:
+        project_override = self._workdirs.get(chat_id)
+        return "\n".join(
+            [
+            "当前项目目录状态:",
+            f"bot: {self._settings.name}",
+            f"provider: {self._provider_label()}",
+            f"default_workdir: {self._settings.claude_workdir}",
+            f"chat_workdir: {project_override or 'not set'}",
+                f"effective_workdir: {self._effective_workdir(chat_id)}",
+            ]
+        )
+
+    def _dispatch_project_command(self, chat_id: int, text: str) -> None:
+        parts = text.split(maxsplit=1)
+        if len(parts) == 1:
+            self._send_message(
+                chat_id,
+                "用法:\n/project ~/projects/my-new-app\n/project default",
+            )
+            return
+
+        raw_target = parts[1].strip()
+        if not raw_target:
+            self._send_message(
+                chat_id,
+                "用法:\n/project ~/projects/my-new-app\n/project default",
+            )
+            return
+
+        if raw_target.lower() in {"default", "reset"}:
+            cleared = self._workdirs.clear(chat_id)
+            self._store.clear(chat_id)
+            self._approvals.clear(chat_id)
+            self._send_message(
+                chat_id,
+                "已恢复默认项目目录并清除当前会话。"
+                if cleared
+                else "当前已在默认项目目录，已清除当前会话。",
+            )
+            return
+
+        base_workdir = self._settings.claude_workdir.resolve()
+        candidate = Path(raw_target).expanduser()
+        if not candidate.is_absolute():
+            candidate = (self._effective_workdir(chat_id) / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+
+        try:
+            candidate.relative_to(base_workdir)
+        except ValueError:
+            self._send_message(
+                chat_id,
+                "项目目录必须位于默认工作区范围内。\n"
+                f"allowed_root: {base_workdir}\n"
+                f"requested: {candidate}",
+            )
+            return
+
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._send_message(chat_id, f"创建项目目录失败:\n{exc}")
+            return
+
+        if not candidate.is_dir():
+            self._send_message(chat_id, f"目标不是目录:\n{candidate}")
+            return
+
+        self._workdirs.set(chat_id, str(candidate))
+        self._store.clear(chat_id)
+        self._approvals.clear(chat_id)
+        self._send_message(
+            chat_id,
+            "已切换当前 chat 的项目目录，并清除旧会话。\n"
+            f"workdir: {candidate}\n"
+            "现在可以直接让机器人在这个目录里开始新项目。",
         )
 
     def _send_message(self, chat_id: int, text: str) -> dict[str, Any]:
@@ -698,6 +829,8 @@ class TelegramBot:
             {"command": "health", "description": "Show bridge health"},
             {"command": "version", "description": "Show version info"},
             {"command": "clear", "description": "Clear current session"},
+            {"command": "project", "description": "Set per-chat project directory"},
+            {"command": "project_status", "description": "Show current project directory"},
             {"command": "approve", "description": "Approve pending request"},
             {"command": "approve_always", "description": "Always auto-approve in this chat"},
             {"command": "approve_bypass", "description": "Auto-approve broader Bash/git access"},
@@ -721,16 +854,45 @@ class TelegramBot:
 
 
 def main() -> None:
-    settings = load_settings()
+    settings_list = load_all_settings()
+    if len(settings_list) == 1:
+        _run_single_bot(settings_list[0])
+        return
+
+    threads: list[threading.Thread] = []
+    for settings in settings_list:
+        thread = threading.Thread(
+            target=_run_single_bot,
+            args=(settings,),
+            name=f"telegram-bridge-{settings.name}",
+            daemon=False,
+        )
+        thread.start()
+        threads.append(thread)
+        LOGGER.info(
+            "Started bot worker name=%s provider=%s status_web=%s:%s enabled=%s",
+            settings.name,
+            settings.provider,
+            settings.status_web_host,
+            settings.status_web_port,
+            settings.status_web_enabled,
+        )
+
+    for thread in threads:
+        thread.join()
+
+
+def _run_single_bot(settings: Settings) -> None:
     store = SessionStore(settings.session_store_path)
+    workdirs = WorkdirStore(settings.workdir_store_path)
     runner = build_runner(settings)
     media_handler = MediaHandler(settings)
     runtime_state = BridgeRuntimeState()
     version_info = get_version_snapshot(settings)
     approvals = ApprovalState(settings.approval_store_path)
     if settings.status_web_enabled:
-        start_status_server(settings, store, approvals, runtime_state, version_info)
-    bot = TelegramBot(settings, store, runner, media_handler, runtime_state, version_info, approvals)
+        start_status_server(settings, store, workdirs, approvals, runtime_state, version_info)
+    bot = TelegramBot(settings, store, runner, media_handler, runtime_state, version_info, approvals, workdirs)
     bot.run_forever()
 
 

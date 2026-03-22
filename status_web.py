@@ -9,8 +9,10 @@ from urllib.parse import parse_qs, urlparse
 from typing import Any
 
 from config import Settings
+from codex_usage import load_codex_usage
 from runtime_state import BridgeRuntimeState
 from session_store import SessionStore, SessionRecord
+from workdir_store import WorkdirStore
 
 
 LOGGER = logging.getLogger("telegram-claude-bridge.status-web")
@@ -19,11 +21,12 @@ LOGGER = logging.getLogger("telegram-claude-bridge.status-web")
 def start_status_server(
     settings: Settings,
     store: SessionStore,
+    workdirs: WorkdirStore,
     approvals,
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
 ) -> ThreadingHTTPServer:
-    handler_class = _build_handler(settings, store, approvals, runtime_state, version_info)
+    handler_class = _build_handler(settings, store, workdirs, approvals, runtime_state, version_info)
     server = ThreadingHTTPServer((settings.status_web_host, settings.status_web_port), handler_class)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -38,6 +41,7 @@ def start_status_server(
 def _build_handler(
     settings: Settings,
     store: SessionStore,
+    workdirs: WorkdirStore,
     approvals,
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
@@ -49,11 +53,11 @@ def _build_handler(
                 self._send_unauthorized()
                 return
             if parsed.path == "/api/status":
-                self._send_json(_status_payload(settings, store, approvals, runtime_state, version_info))
+                self._send_json(_status_payload(settings, store, workdirs, approvals, runtime_state, version_info))
                 return
             if parsed.path == "/":
                 self._send_html(
-                    _render_html(_status_payload(settings, store, approvals, runtime_state, version_info))
+                    _render_html(_status_payload(settings, store, workdirs, approvals, runtime_state, version_info))
                 )
                 return
             self.send_error(404, "Not Found")
@@ -107,23 +111,27 @@ def _is_authorized(settings: Settings, authorization_header: str | None, query: 
 def _status_payload(
     settings: Settings,
     store: SessionStore,
+    workdirs: WorkdirStore,
     approvals,
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
 ) -> dict[str, Any]:
     snapshot = runtime_state.snapshot()
-    sessions = [
-        {
-            "chat_id": chat_id,
-            "session_id": record.session_id,
-            "cwd": record.cwd,
-            "updated_at": record.updated_at,
-        }
-        for chat_id, record in store.items()
-    ]
+    sessions = []
+    for chat_id, record in store.items():
+        usage = load_codex_usage(record.session_id) if settings.provider == "codex" else None
+        sessions.append(
+            {
+                "chat_id": chat_id,
+                "session_id": record.session_id,
+                "cwd": record.cwd,
+                "updated_at": record.updated_at,
+                "codex_usage": usage.to_dict() if usage is not None else None,
+            }
+        )
     return {
         "service": {
-            "name": "telegram-claude-bridge",
+            "name": settings.name,
             "started_at": snapshot.started_at,
             "last_success_at": snapshot.last_success_at,
             "last_error_at": snapshot.last_error_at,
@@ -137,7 +145,9 @@ def _status_payload(
             "workdir": str(settings.claude_workdir),
             "streaming": settings.claude_streaming,
             "approval_store_path": str(settings.approval_store_path),
+            "workdir_store_path": str(settings.workdir_store_path),
             "approve_always_chats": approvals.always_count(),
+            "project_override_chats": len(workdirs.items()),
             "status_web": {
                 "enabled": settings.status_web_enabled,
                 "host": settings.status_web_host,
@@ -145,6 +155,10 @@ def _status_payload(
             },
         },
         "version": version_info,
+        "workdir_overrides": [
+            {"chat_id": chat_id, "cwd": cwd}
+            for chat_id, cwd in workdirs.items()
+        ],
         "sessions": sessions,
         "session_count": len(sessions),
     }

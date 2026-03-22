@@ -107,6 +107,7 @@ def ensure_env_file(target: str, config_dir: Path) -> Path:
     env_content = textwrap.dedent(
         f"""\
         TELEGRAM_BOT_TOKEN=
+        BOTS_CONFIG_FILE=
         BRIDGE_PROVIDER=claude
         CLAUDE_BIN=claude
         CLAUDE_WORKDIR={REPO_DIR}
@@ -119,6 +120,7 @@ def ensure_env_file(target: str, config_dir: Path) -> Path:
         TELEGRAM_POLL_TIMEOUT=30
         TELEGRAM_EDIT_INTERVAL_SECONDS=1.0
         SESSION_STORE_PATH={REPO_DIR / "sessions.json"}
+        WORKDIR_STORE_PATH={REPO_DIR / "chat_workdirs.json"}
         WHISPER_BIN={whisper_bin or 'whisper'}
         WHISPER_MODEL=base
         WHISPER_FALLBACK_MODELS=tiny

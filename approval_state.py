@@ -15,6 +15,7 @@ def _utc_now_iso() -> str:
 class PendingApproval:
     chat_id: int
     session_id: str | None
+    cwd: str
     original_prompt: str
     permission_mode: str
     requested_at: str
@@ -60,6 +61,7 @@ class ApprovalState:
         *,
         chat_id: int,
         session_id: str | None,
+        cwd: str,
         original_prompt: str,
         permission_mode: str,
         assistant_message: str,
@@ -67,6 +69,7 @@ class ApprovalState:
         approval = PendingApproval(
             chat_id=chat_id,
             session_id=session_id,
+            cwd=cwd,
             original_prompt=original_prompt,
             permission_mode=permission_mode,
             requested_at=_utc_now_iso(),
