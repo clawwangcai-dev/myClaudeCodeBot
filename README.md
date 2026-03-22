@@ -17,7 +17,7 @@ Set these variables before starting:
 export TELEGRAM_BOT_TOKEN=...
 export BRIDGE_PROVIDER=claude
 export CLAUDE_BIN=claude
-export CLAUDE_WORKDIR=/home/chao/projects/safe-repo
+export CLAUDE_WORKDIR=~/projects/safe-repo
 export CLAUDE_SETTINGS_FILE=/home/chao/.config/telegram-claude-bridge/claude-settings.json
 export CLAUDE_PERMISSION_MODE=default
 export CLAUDE_APPROVAL_PERMISSION_MODE=acceptEdits
@@ -47,8 +47,8 @@ export WHISPER_LANGUAGE=
 export WHISPER_THREADS=2
 export CODEX_BIN=codex
 export CODEX_MODEL=
-export CODEX_SANDBOX=workspace-write
-export CODEX_APPROVAL_POLICY=on-request
+export CODEX_SANDBOX=danger-full-access
+export CODEX_APPROVAL_POLICY=never
 ```
 
 ### Run
@@ -83,6 +83,7 @@ python3 install_service.py
 - Set `BRIDGE_PROVIDER=claude` to use the Claude CLI backend or `BRIDGE_PROVIDER=codex` to use the Codex CLI backend.
 - The Claude backend uses `claude -p ... --output-format json` / `stream-json`.
 - The Codex backend uses `codex exec --json` / `codex exec resume --json`.
+- On this Linux machine, Codex `workspace-write` / `--full-auto` may still hit a local `bwrap: Unknown option --argv0` failure on model-generated shell commands even after the bridge session is cleared. The verified workaround is `CODEX_SANDBOX=danger-full-access` with `CODEX_APPROVAL_POLICY=never`, which makes the bridge invoke Codex with `--dangerously-bypass-approvals-and-sandbox`.
 - Set `CLAUDE_STREAMING=true` to switch to `--output-format stream-json --include-partial-messages` and stream partial replies by editing the in-flight Telegram message.
 - Keep the bridge default at `CLAUDE_PERMISSION_MODE=default`; when the backend replies that it needs write/edit permission, the bridge records a one-shot pending approval and you can continue from Telegram with `/approve` or cancel with `/deny`.
 - `/approve` retries the blocked task in the same chat using `CLAUDE_APPROVAL_PERMISSION_MODE` (defaults to `acceptEdits`) instead of permanently loosening permissions for all requests.
@@ -124,7 +125,7 @@ python3 install_service.py restart
 python3 install_service.py uninstall
 ```
 
-The runtime path is unified across platforms through [service_entry.py](/home/chao/projects/claudeBot/service_entry.py), which loads the env file and patches `PATH` for common Claude/Node installations before starting the bot.
+The runtime path is unified across platforms through `~/myCodeBot/service_entry.py`, which loads the env file and patches `PATH` for common Claude/Node installations before starting the bot.
 
 #### Linux Manual Install
 
@@ -132,9 +133,9 @@ If you still want the manual Linux path:
 
 ```bash
 mkdir -p ~/.config/systemd/user ~/.config/telegram-claude-bridge
-cp /home/chao/projects/claudeBot/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
-cp /home/chao/projects/claudeBot/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
-cp /home/chao/projects/claudeBot/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
+cp ~/myCodeBot/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
+cp ~/myCodeBot/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
+cp ~/myCodeBot/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
 $EDITOR ~/.config/telegram-claude-bridge/env
 systemctl --user daemon-reload
 systemctl --user enable --now telegram-claude-bridge.service
@@ -162,7 +163,7 @@ loginctl enable-linger "$USER"
 export TELEGRAM_BOT_TOKEN=...
 export BRIDGE_PROVIDER=claude
 export CLAUDE_BIN=claude
-export CLAUDE_WORKDIR=/home/chao/projects/safe-repo
+export CLAUDE_WORKDIR=~/projects/safe-repo
 export CLAUDE_SETTINGS_FILE=/home/chao/.config/telegram-claude-bridge/claude-settings.json
 export CLAUDE_PERMISSION_MODE=default
 export CLAUDE_APPROVAL_PERMISSION_MODE=acceptEdits
@@ -192,8 +193,8 @@ export WHISPER_LANGUAGE=
 export WHISPER_THREADS=2
 export CODEX_BIN=codex
 export CODEX_MODEL=
-export CODEX_SANDBOX=workspace-write
-export CODEX_APPROVAL_POLICY=on-request
+export CODEX_SANDBOX=danger-full-access
+export CODEX_APPROVAL_POLICY=never
 ```
 
 ### 运行
@@ -228,6 +229,7 @@ python3 install_service.py
 - 设置 `BRIDGE_PROVIDER=claude` 使用 Claude CLI 后端；设置 `BRIDGE_PROVIDER=codex` 使用 Codex CLI 后端。
 - Claude 后端使用 `claude -p ... --output-format json` / `stream-json`。
 - Codex 后端使用 `codex exec --json` / `codex exec resume --json`。
+- 在这台 Linux 机器上，Codex 的 `workspace-write` / `--full-auto` 在执行模型生成的 shell 命令时，仍可能触发本地 `bwrap: Unknown option --argv0` 错误；清理 Telegram 对话也不会解决。当前已验证可用的规避方式是设置 `CODEX_SANDBOX=danger-full-access` 和 `CODEX_APPROVAL_POLICY=never`，让 bridge 以 `--dangerously-bypass-approvals-and-sandbox` 调用 Codex。
 - 设置 `CLAUDE_STREAMING=true` 可切换到 `--output-format stream-json --include-partial-messages`，通过编辑正在发送的消息实现流式回复。
 - 保持桥接服务默认使用 `CLAUDE_PERMISSION_MODE=default`；当后端回复需要写入/编辑权限时，桥接服务会记录一次性待批准请求，你可以通过 Telegram 使用 `/approve` 继续或使用 `/deny` 取消。
 - `/approve` 使用 `CLAUDE_APPROVAL_PERMISSION_MODE`（默认为 `acceptEdits`）在同一聊天中重试被阻止的任务，而不是永久放宽所有请求的权限。
@@ -269,7 +271,7 @@ python3 install_service.py restart
 python3 install_service.py uninstall
 ```
 
-运行时路径通过 [service_entry.py](/home/chao/projects/claudeBot/service_entry.py) 在各平台统一管理，它会加载环境变量文件并为常见的 Claude/Node 安装路径补丁 `PATH`，然后启动机器人。
+运行时路径通过 `~/myCodeBot/service_entry.py` 在各平台统一管理，它会加载环境变量文件并为常见的 Claude/Node 安装路径补丁 `PATH`，然后启动机器人。
 
 #### Linux 手动安装
 
@@ -277,9 +279,9 @@ python3 install_service.py uninstall
 
 ```bash
 mkdir -p ~/.config/systemd/user ~/.config/telegram-claude-bridge
-cp /home/chao/projects/claudeBot/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
-cp /home/chao/projects/claudeBot/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
-cp /home/chao/projects/claudeBot/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
+cp ~/myCodeBot/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
+cp ~/myCodeBot/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
+cp ~/myCodeBot/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
 $EDITOR ~/.config/telegram-claude-bridge/env
 systemctl --user daemon-reload
 systemctl --user enable --now telegram-claude-bridge.service
