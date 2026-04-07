@@ -17,6 +17,7 @@ It currently supports:
 - multi-bot mode
 - text, image, and voice messages
 - per-chat project directories
+- managed scheduled reminders
 - experimental WhatsApp webhook ingress
 - local web chat with channel-aware conversation history
 
@@ -158,7 +159,27 @@ who are you?
 - `/approve_bypass` auto-approve broader Bash/git-level requests in this chat
 - `/approve_manual` turn auto-approve off
 - `/resume_local` print the local `claude` / `codex` resume command for this conversation
+- `/schedule_reminder <YYYY-MM-DD HH:MM | text>` create a managed local reminder
+- `/schedule_list` list reminders created for this chat
+- `/schedule_cancel <id>` cancel a reminder created for this chat
 - `/deny` deny the pending request
+
+#### Scheduled Reminders
+
+Use:
+
+```text
+/schedule_reminder 2026-04-09 09:00 | Check tire pressure before driving
+/schedule_list
+/schedule_cancel <id>
+```
+
+Behavior:
+- reminders are created only from Telegram chats
+- Linux uses `systemd --user` timers
+- Windows uses `schtasks` Scheduled Tasks
+- the bridge writes only its own managed reminder jobs, not arbitrary shell commands
+- after the worker sends the Telegram message, it marks the reminder as sent and cleans up the timer/task
 
 ### 7. Start A New Project From Telegram
 
@@ -515,6 +536,7 @@ WhatsApp replies fail
 - 多 bot 模式
 - 文本、图片、语音
 - 每个 Telegram chat 独立项目目录
+- 受控的定时提醒
 - 实验性的 WhatsApp webhook 接入
 - 支持按 channel 区分会话的本地网页聊天
 
@@ -659,7 +681,27 @@ who are you?
 - `/approve_bypass` 当前 chat 后续自动批准更高权限，包括 Bash/git
 - `/approve_manual` 关闭自动批准
 - `/resume_local` 输出当前会话对应的本地 `claude` / `codex` 续聊命令
+- `/schedule_reminder <YYYY-MM-DD HH:MM | 文本>` 创建受控的本地提醒
+- `/schedule_list` 列出当前 chat 创建的提醒
+- `/schedule_cancel <id>` 取消当前 chat 创建的提醒
 - `/deny` 拒绝当前待授权请求
+
+#### 定时提醒
+
+用法：
+
+```text
+/schedule_reminder 2026-04-09 09:00 | 出发前检查轮胎气压
+/schedule_list
+/schedule_cancel <id>
+```
+
+行为说明：
+- 目前只有 Telegram chat 可以创建提醒
+- Linux 下使用 `systemd --user` timer
+- Windows 下使用 `schtasks` 计划任务
+- bridge 只会写入自己管理的提醒任务，不会开放任意 shell 命令
+- worker 发完 Telegram 消息后，会把提醒标记为已发送，并清理对应 timer/task
 
 ### 7. 在 Telegram 里开始一个新项目
 

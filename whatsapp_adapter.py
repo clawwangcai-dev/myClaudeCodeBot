@@ -131,6 +131,7 @@ class WhatsAppAdapter:
         if message_type == "text":
             body = ((message.get("text") or {}).get("body") or "").strip()
             if body:
+                self._core.remember_user_language(conversation, body)
                 self._core.process_text(conversation, body)
             return
 
@@ -142,22 +143,26 @@ class WhatsAppAdapter:
             self._handle_audio(conversation, message)
             return
 
-        self.send_message(conversation, "暂不支持这种 WhatsApp 消息类型。当前支持文本、图片和音频。")
+        self.send_message(conversation, self._core.render_ui_text(conversation, "whatsapp_unsupported_message_type"))
 
     def _handle_image(self, conversation: ConversationRef, message: dict[str, Any]) -> None:
         image = message.get("image") or {}
         media_id = str(image.get("id") or "").strip()
         if not media_id:
-            self.send_message(conversation, "WhatsApp 图片消息缺少 media id。")
+            self.send_message(conversation, self._core.render_ui_text(conversation, "whatsapp_image_missing_media_id"))
             return
         caption = str(image.get("caption") or "").strip()
+        self._core.remember_user_language(conversation, caption)
         self._core.log_message(
             conversation,
             role="user",
             source="whatsapp",
             text=caption or "[WhatsApp image]",
         )
-        self.send_message(conversation, f"已收到 WhatsApp 图片，正在下载并转交给 {self._settings.provider}…")
+        self.send_message(
+            conversation,
+            self._core.render_ui_text(conversation, "whatsapp_image_received", provider=self._settings.provider),
+        )
         try:
             media = self._download_media(media_id=media_id, caption=caption, default_name=f"{media_id}.jpg")
             prompt = self._core._media_handler.build_image_prompt(media)
@@ -168,13 +173,16 @@ class WhatsAppAdapter:
                 image_paths=[str(media.path)] if self._settings.provider == "codex" else None,
             )
         except MediaHandlerError as exc:
-            self.send_message(conversation, f"WhatsApp 图片处理失败:\n{exc}")
+            self.send_message(
+                conversation,
+                self._core.render_ui_text(conversation, "whatsapp_image_processing_failed", error=exc),
+            )
 
     def _handle_audio(self, conversation: ConversationRef, message: dict[str, Any]) -> None:
         audio = message.get("audio") or {}
         media_id = str(audio.get("id") or "").strip()
         if not media_id:
-            self.send_message(conversation, "WhatsApp 音频消息缺少 media id。")
+            self.send_message(conversation, self._core.render_ui_text(conversation, "whatsapp_audio_missing_media_id"))
             return
         self._core.log_message(
             conversation,
@@ -182,7 +190,7 @@ class WhatsAppAdapter:
             source="whatsapp",
             text="[WhatsApp audio]",
         )
-        self.send_message(conversation, "已收到 WhatsApp 音频，正在下载并转写…")
+        self.send_message(conversation, self._core.render_ui_text(conversation, "whatsapp_audio_received"))
         try:
             media = self._download_media(
                 media_id=media_id,
@@ -196,11 +204,18 @@ class WhatsAppAdapter:
                 source="whatsapp",
                 text=f"[Voice transcript]\n{transcript.text.strip() or '(empty transcription)'}",
             )
-            self.send_message(conversation, f"语音已转写，正在转交给 {self._settings.provider}…")
+            self._core.remember_user_language(conversation, transcript.text)
+            self.send_message(
+                conversation,
+                self._core.render_ui_text(conversation, "whatsapp_voice_transcribed", provider=self._settings.provider),
+            )
             prompt = self._core._media_handler.build_voice_prompt(transcript)
             self._core.run_prompt(conversation, prompt=prompt, start_text=None)
         except MediaHandlerError as exc:
-            self.send_message(conversation, f"WhatsApp 音频处理失败:\n{exc}")
+            self.send_message(
+                conversation,
+                self._core.render_ui_text(conversation, "whatsapp_audio_processing_failed", error=exc),
+            )
 
     def _download_media(self, *, media_id: str, caption: str, default_name: str):
         metadata = self._graph_get(f"/{media_id}")

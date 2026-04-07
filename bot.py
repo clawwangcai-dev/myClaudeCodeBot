@@ -22,6 +22,8 @@ from claude_runner import format_text_reply
 from config import Settings, load_all_settings
 from codex_usage import load_codex_usage
 from media_handler import DownloadedMedia, MediaHandler, MediaHandlerError
+from reminder_scheduler import ReminderScheduler
+from reminder_store import ReminderStore
 from resume_telegram_session import format_resume_target, get_resume_target, get_resume_targets_for_chat
 from runtime_state import BridgeRuntimeState
 from runner_factory import build_runner
@@ -71,6 +73,7 @@ class TelegramBot:
         approvals: ApprovalState,
         workdirs: WorkdirStore,
         chat_log: ChatLogStore,
+        reminders: ReminderScheduler | None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -92,6 +95,7 @@ class TelegramBot:
             approvals,
             workdirs,
             chat_log,
+            reminders,
             self,
         )
 
@@ -218,7 +222,8 @@ class TelegramBot:
             self._dispatch_voice(chat_id=chat_id, message=message, payload=audio)
             return
 
-        self._send_message(chat_id, "暂不支持这种消息类型。目前支持文本、图片和语音。")
+        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
+        self._send_message(chat_id, self._core.render_ui_text(conversation, "unsupported_message_type"))
 
     def _dispatch_text(self, chat_id: int, text: str) -> None:
         self._core.process_text(ConversationRef(channel="telegram", chat_id=str(chat_id)), text)
@@ -227,18 +232,22 @@ class TelegramBot:
         photos = message.get("photo") or []
         largest = photos[-1]
         file_id = largest.get("file_id")
+        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
         if not file_id:
-            self._send_message(chat_id, "图片消息缺少 file_id。")
+            self._send_message(chat_id, self._core.render_ui_text(conversation, "image_missing_file_id"))
             return
         caption = (message.get("caption") or "").strip()
-        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
+        self._core.remember_user_language(conversation, caption)
         self._core.log_message(
             conversation,
             role="user",
             source="telegram",
             text=caption or "[Telegram image]",
         )
-        self._send_message(chat_id, f"已收到图片，正在下载并转交给 {self._provider_label()}…")
+        self._send_message(
+            chat_id,
+            self._core.render_ui_text(conversation, "image_received", provider=self._provider_label()),
+        )
         try:
             media = self._download_telegram_media(
                 file_id=file_id,
@@ -253,23 +262,27 @@ class TelegramBot:
                 image_paths=[str(media.path)] if self._settings.provider == "codex" else None,
             )
         except MediaHandlerError as exc:
-            self._send_message(chat_id, f"图片处理失败:\n{exc}")
+            self._send_message(chat_id, self._core.render_ui_text(conversation, "image_processing_failed", error=exc))
 
     def _dispatch_image_document(self, chat_id: int, message: dict[str, Any]) -> None:
         document = message.get("document") or {}
         file_id = document.get("file_id")
+        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
         if not file_id:
-            self._send_message(chat_id, "图片文件缺少 file_id。")
+            self._send_message(chat_id, self._core.render_ui_text(conversation, "image_doc_missing_file_id"))
             return
         caption = (message.get("caption") or "").strip()
-        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
+        self._core.remember_user_language(conversation, caption)
         self._core.log_message(
             conversation,
             role="user",
             source="telegram",
             text=caption or "[Telegram image document]",
         )
-        self._send_message(chat_id, f"已收到图片文件，正在下载并转交给 {self._provider_label()}…")
+        self._send_message(
+            chat_id,
+            self._core.render_ui_text(conversation, "image_doc_received", provider=self._provider_label()),
+        )
         try:
             media = self._download_telegram_media(
                 file_id=file_id,
@@ -285,22 +298,23 @@ class TelegramBot:
                 image_paths=[str(media.path)] if self._settings.provider == "codex" else None,
             )
         except MediaHandlerError as exc:
-            self._send_message(chat_id, f"图片处理失败:\n{exc}")
+            self._send_message(chat_id, self._core.render_ui_text(conversation, "image_processing_failed", error=exc))
 
     def _dispatch_voice(self, chat_id: int, message: dict[str, Any], payload: dict[str, Any]) -> None:
         file_id = payload.get("file_id")
+        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
         if not file_id:
-            self._send_message(chat_id, "语音消息缺少 file_id。")
+            self._send_message(chat_id, self._core.render_ui_text(conversation, "voice_missing_file_id"))
             return
         caption = (message.get("caption") or "").strip()
-        conversation = ConversationRef(channel="telegram", chat_id=str(chat_id))
+        self._core.remember_user_language(conversation, caption)
         self._core.log_message(
             conversation,
             role="user",
             source="telegram",
             text=caption or "[Telegram voice]",
         )
-        self._send_message(chat_id, "已收到语音，正在下载并转写…")
+        self._send_message(chat_id, self._core.render_ui_text(conversation, "voice_received"))
         try:
             media = self._download_telegram_media(
                 file_id=file_id,
@@ -315,11 +329,15 @@ class TelegramBot:
                 source="telegram",
                 text=f"[Voice transcript]\n{transcript.text.strip() or '(empty transcription)'}",
             )
-            self._send_message(chat_id, f"语音已转写，正在转交给 {self._provider_label()}…")
+            self._core.remember_user_language(conversation, transcript.text)
+            self._send_message(
+                chat_id,
+                self._core.render_ui_text(conversation, "voice_transcribed", provider=self._provider_label()),
+            )
             prompt = self._media_handler.build_voice_prompt(transcript)
             self._core.run_prompt(conversation, prompt=prompt, start_text=None)
         except MediaHandlerError as exc:
-            self._send_message(chat_id, f"语音处理失败:\n{exc}")
+            self._send_message(chat_id, self._core.render_ui_text(conversation, "voice_processing_failed", error=exc))
 
     def _download_telegram_media(
         self,
@@ -894,6 +912,9 @@ class TelegramBot:
             {"command": "approve_bypass", "description": "Auto-approve broader Bash/git access"},
             {"command": "approve_manual", "description": "Turn off auto-approve"},
             {"command": "resume_local", "description": "Show local Claude/Codex resume commands"},
+            {"command": "schedule_reminder", "description": "Create a managed local reminder"},
+            {"command": "schedule_list", "description": "List reminders for this chat"},
+            {"command": "schedule_cancel", "description": "Cancel a reminder by id"},
             {"command": "deny", "description": "Deny pending request"},
         ]
         try:
@@ -964,6 +985,8 @@ def _run_single_bot(settings: Settings) -> None:
     version_info = get_version_snapshot(settings)
     approvals = ApprovalState(settings.approval_store_path)
     chat_log = ChatLogStore(settings.session_store_path.with_name("chat_log.json"))
+    reminder_store = ReminderStore(settings.session_store_path.with_name("scheduled_reminders.json"))
+    reminders = ReminderScheduler(settings, reminder_store)
     bot = TelegramBot(
         settings,
         store,
@@ -974,6 +997,7 @@ def _run_single_bot(settings: Settings) -> None:
         approvals,
         workdirs,
         chat_log,
+        reminders,
     )
     if settings.status_web_enabled:
         start_status_server(
