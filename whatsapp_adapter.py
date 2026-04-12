@@ -205,6 +205,13 @@ class WhatsAppAdapter:
                 text=f"[Voice transcript]\n{transcript.text.strip() or '(empty transcription)'}",
             )
             self._core.remember_user_language(conversation, transcript.text)
+            if self._core.try_handle_construction_text(
+                conversation,
+                transcript.text,
+                source_type="voice",
+                audio_path=str(media.path),
+            ):
+                return
             self.send_message(
                 conversation,
                 self._core.render_ui_text(conversation, "whatsapp_voice_transcribed", provider=self._settings.provider),

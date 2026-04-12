@@ -16,6 +16,7 @@ from chat_log import ChatLogStore
 from claude_runner import format_text_reply
 from codex_usage import load_codex_usage
 from config import Settings
+from construction_agent import ConstructionAgentService
 from media_handler import MediaHandler
 from reminder_scheduler import ReminderScheduler, ReminderSchedulerError
 from resume_telegram_session import (
@@ -526,6 +527,7 @@ class BridgeCore:
         workdirs: WorkdirStore,
         chat_log: ChatLogStore,
         reminders: ReminderScheduler | None,
+        construction_agent: ConstructionAgentService | None,
         transport: BridgeTransport,
     ) -> None:
         self._settings = settings
@@ -538,6 +540,7 @@ class BridgeCore:
         self._workdirs = workdirs
         self._chat_log = chat_log
         self._reminders = reminders
+        self._construction_agent = construction_agent
         self._transport = transport
         self._conversation_locks: dict[str, threading.RLock] = {}
         self._conversation_locks_guard = threading.Lock()
@@ -843,6 +846,17 @@ class BridgeCore:
                 if cleared
                 else self.render_ui_text(conversation, "no_pending_approval"),
             )
+            return
+
+        construction_reply = self._try_handle_construction_text(
+            conversation,
+            text,
+            source_type="text",
+            audio_path=None,
+        )
+        if construction_reply is not None:
+            self.log_message(conversation, role="user", source=conversation.channel, text=text)
+            self._send_message(conversation, construction_reply)
             return
 
         self.log_message(conversation, role="user", source=conversation.channel, text=text)
@@ -1367,6 +1381,26 @@ class BridgeCore:
                 )
             self.run_prompt(conversation, prompt=clean, start_text=None)
 
+    def try_handle_construction_text(
+        self,
+        conversation: ConversationRef,
+        text: str,
+        *,
+        source_type: str = "text",
+        audio_path: str | None = None,
+    ) -> bool:
+        reply = self._try_handle_construction_text(
+            conversation,
+            text,
+            source_type=source_type,
+            audio_path=audio_path,
+        )
+        if reply is None:
+            return False
+        self.log_message(conversation, role="user", source=conversation.channel, text=text)
+        self._send_message(conversation, reply)
+        return True
+
     def _effective_workdir(self, conversation: ConversationRef) -> Path:
         override = self._workdirs.get(conversation.key)
         if override:
@@ -1380,13 +1414,16 @@ class BridgeCore:
         return build_runner(replace(self._settings, claude_workdir=workdir))
 
     def _help_text(self, conversation: ConversationRef) -> str:
-        return self.render_ui_text(
+        base = self.render_ui_text(
             conversation,
             "help_text",
             bot=self._settings.name,
             channel_label=self._transport.help_channel_label(),
             provider=self._provider_label(),
         )
+        if self._construction_agent and self._construction_agent.enabled:
+            return f"{base}\n\n{self._construction_agent.help_text()}"
+        return base
 
     def _allowed_project_roots(self) -> list[Path]:
         roots = [self._settings.claude_workdir.resolve()]
@@ -1423,6 +1460,27 @@ class BridgeCore:
 
     def _provider_label(self) -> str:
         return self._settings.provider
+
+    def _try_handle_construction_text(
+        self,
+        conversation: ConversationRef,
+        text: str,
+        *,
+        source_type: str,
+        audio_path: str | None,
+    ) -> str | None:
+        if self._construction_agent is None or not self._construction_agent.enabled:
+            return None
+        try:
+            return self._construction_agent.handle_text(
+                conversation,
+                text,
+                source_type=source_type,
+                audio_path=audio_path,
+            )
+        except Exception as exc:
+            LOGGER.exception("Construction agent handling failed for %s", conversation.key)
+            return f"Construction agent error:\n{exc}"
 
     def _parse_schedule_time(self, raw: str) -> datetime | None:
         clean = raw.strip()

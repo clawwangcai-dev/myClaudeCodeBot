@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from channel_keys import ConversationRef, parse_conversation_key
 from chat_log import ChatLogStore
 from config import Settings
+from construction_agent import ConstructionAgentService
 from codex_usage import load_codex_usage
 from resume_telegram_session import get_resume_targets_for_chat
 from runtime_state import BridgeRuntimeState
@@ -30,6 +31,7 @@ def start_status_server(
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
     chat_log: ChatLogStore,
+    construction_agent: ConstructionAgentService | None,
     submit_prompt,
 ) -> ThreadingHTTPServer:
     handler_class = _build_handler(
@@ -40,6 +42,7 @@ def start_status_server(
         runtime_state,
         version_info,
         chat_log,
+        construction_agent,
         submit_prompt,
     )
     server = ThreadingHTTPServer((settings.status_web_host, settings.status_web_port), handler_class)
@@ -61,6 +64,7 @@ def _build_handler(
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
     chat_log: ChatLogStore,
+    construction_agent: ConstructionAgentService | None,
     submit_prompt,
 ):
     class StatusHandler(BaseHTTPRequestHandler):
@@ -72,7 +76,7 @@ def _build_handler(
 
             if parsed.path == "/api/status":
                 self._send_json(
-                    _status_payload(settings, store, workdirs, approvals, runtime_state, version_info, chat_log)
+                    _status_payload(settings, store, workdirs, approvals, runtime_state, version_info, chat_log, construction_agent)
                 )
                 return
             if parsed.path == "/api/chats":
@@ -88,15 +92,45 @@ def _build_handler(
                     return
                 self._send_json(_chat_payload(conversation, store, workdirs, approvals, chat_log))
                 return
+            if parsed.path == "/api/construction/overview":
+                if construction_agent is None or not construction_agent.enabled:
+                    self.send_error(404, "Construction agent not enabled")
+                    return
+                work_date = parse_qs(parsed.query).get("date", [None])[0]
+                self._send_json({"ok": True, "data": construction_agent.overview(work_date=work_date)})
+                return
+            if parsed.path == "/api/construction/resources":
+                if construction_agent is None or not construction_agent.enabled:
+                    self.send_error(404, "Construction agent not enabled")
+                    return
+                kind = str(parse_qs(parsed.query).get("kind", [""])[0]).strip()
+                if not kind:
+                    self.send_error(400, "kind is required")
+                    return
+                self._send_json({"ok": True, "data": construction_agent.list_resources(kind)})
+                return
+            if parsed.path == "/api/construction/notes":
+                if construction_agent is None or not construction_agent.enabled:
+                    self.send_error(404, "Construction agent not enabled")
+                    return
+                status = parse_qs(parsed.query).get("status", [None])[0]
+                self._send_json({"ok": True, "data": construction_agent.list_notes(status=status, limit=100)})
+                return
             if parsed.path == "/":
                 self._send_html(
                     _render_status_html(
-                        _status_payload(settings, store, workdirs, approvals, runtime_state, version_info, chat_log)
+                        _status_payload(settings, store, workdirs, approvals, runtime_state, version_info, chat_log, construction_agent)
                     )
                 )
                 return
             if parsed.path == "/chat":
                 self._send_html(_render_chat_html(settings))
+                return
+            if parsed.path == "/construction":
+                if construction_agent is None or not construction_agent.enabled:
+                    self.send_error(404, "Construction agent not enabled")
+                    return
+                self._send_html(_render_construction_html(settings))
                 return
             self.send_error(404, "Not Found")
 
@@ -105,20 +139,75 @@ def _build_handler(
             if not _is_authorized(settings, self.headers.get("Authorization"), parsed.query):
                 self._send_unauthorized()
                 return
-            if parsed.path != "/api/chat/send":
+            payload = self._read_json_body()
+            if parsed.path == "/api/chat/send":
+                conversation = _parse_conversation(payload.get("conversation_key"), payload.get("chat_id"))
+                prompt = str(payload.get("prompt") or "").strip()
+                mirror_to_telegram = bool(payload.get("mirror_to_telegram", True))
+                if conversation is None or not prompt:
+                    self.send_error(400, "conversation_key and prompt are required")
+                    return
+
+                submit_prompt(conversation.key, prompt, mirror_to_telegram=mirror_to_telegram)
+                self._send_json({"ok": True, "conversation_key": conversation.key, "queued": True})
+                return
+            if construction_agent is None or not construction_agent.enabled:
                 self.send_error(404, "Not Found")
                 return
-
-            payload = self._read_json_body()
-            conversation = _parse_conversation(payload.get("conversation_key"), payload.get("chat_id"))
-            prompt = str(payload.get("prompt") or "").strip()
-            mirror_to_telegram = bool(payload.get("mirror_to_telegram", True))
-            if conversation is None or not prompt:
-                self.send_error(400, "conversation_key and prompt are required")
+            if parsed.path == "/api/construction/resource":
+                kind = str(payload.get("kind") or "").strip()
+                record = payload.get("record")
+                if not kind or not isinstance(record, dict):
+                    self.send_error(400, "kind and record are required")
+                    return
+                self._send_json({"ok": True, "data": construction_agent.save_resource(kind, record)})
                 return
-
-            submit_prompt(conversation.key, prompt, mirror_to_telegram=mirror_to_telegram)
-            self._send_json({"ok": True, "conversation_key": conversation.key, "queued": True})
+            if parsed.path == "/api/construction/confirm-note":
+                note_id = str(payload.get("note_id") or "").strip()
+                actor = str(payload.get("actor") or "web").strip()
+                if not note_id:
+                    self.send_error(400, "note_id is required")
+                    return
+                self._send_json({"ok": True, "data": construction_agent.confirm_note(note_id, actor=actor)})
+                return
+            if parsed.path == "/api/construction/plan/generate":
+                work_date = str(payload.get("work_date") or "").strip() or None
+                actor = str(payload.get("actor") or "web").strip()
+                plan = construction_agent.generate_plan(work_date=work_date, created_reason="web-generate", created_by=actor)
+                self._send_json({"ok": True, "data": plan})
+                return
+            if parsed.path == "/api/construction/plan/replan":
+                reason = str(payload.get("reason") or "").strip()
+                work_date = str(payload.get("work_date") or "").strip() or None
+                actor = str(payload.get("actor") or "web").strip()
+                if not reason:
+                    self.send_error(400, "reason is required")
+                    return
+                self._send_json({"ok": True, "data": construction_agent.replan(reason=reason, work_date=work_date, actor=actor)})
+                return
+            if parsed.path == "/api/construction/override":
+                plan_id = str(payload.get("plan_id") or "").strip()
+                assignment_id = str(payload.get("assignment_id") or "").strip()
+                if not plan_id or not assignment_id:
+                    self.send_error(400, "plan_id and assignment_id are required")
+                    return
+                self._send_json(
+                    {
+                        "ok": True,
+                        "data": construction_agent.apply_override(
+                            plan_id=plan_id,
+                            assignment_id=assignment_id,
+                            new_employee_names=payload.get("new_employee_names") or [],
+                            new_vehicle_code=str(payload.get("new_vehicle_code") or "").strip() or None,
+                            changed_by=str(payload.get("changed_by") or "web").strip(),
+                            reason_type=str(payload.get("reason_type") or "manual_override").strip(),
+                            reason_text=str(payload.get("reason_text") or "").strip(),
+                            should_learn=bool(payload.get("should_learn", False)),
+                        ),
+                    }
+                )
+                return
+            self.send_error(404, "Not Found")
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             LOGGER.info("%s - %s", self.address_string(), format % args)
@@ -181,6 +270,7 @@ def _status_payload(
     runtime_state: BridgeRuntimeState,
     version_info: dict[str, str],
     chat_log: ChatLogStore,
+    construction_agent: ConstructionAgentService | None,
 ) -> dict[str, Any]:
     snapshot = runtime_state.snapshot()
     sessions = []
@@ -217,6 +307,10 @@ def _status_payload(
             "workdir_store_path": str(settings.workdir_store_path),
             "approve_always_chats": approvals.always_count(),
             "project_override_chats": len(workdirs.items()),
+            "construction_agent": {
+                "enabled": bool(construction_agent and construction_agent.enabled),
+                "db_path": str(construction_agent.db_path) if construction_agent and construction_agent.enabled else None,
+            },
             "status_web": {
                 "enabled": settings.status_web_enabled,
                 "host": settings.status_web_host,
@@ -329,6 +423,12 @@ def _render_status_html(payload: dict[str, Any]) -> str:
     bridge = payload["bridge"]
     version = payload["version"]
     sessions = payload["sessions"]
+    construction = bridge.get("construction_agent") or {}
+    construction_line = (
+        ' Construction: <a href="/construction">/construction</a>'
+        if construction.get("enabled")
+        else ""
+    )
 
     rows = "\n".join(
         (
@@ -437,7 +537,7 @@ def _render_status_html(payload: dict[str, Any]) -> str:
 <body>
   <main>
     <h1>{html.escape(service['name'])}</h1>
-    <p>Local-only status page. JSON endpoint: <code>/api/status</code>. Chat UI: <a href="/chat">/chat</a></p>
+    <p>Local-only status page. JSON endpoint: <code>/api/status</code>. Chat UI: <a href="/chat">/chat</a>.{construction_line}</p>
     <div class="grid">
       <section class="card"><div class="label">Requests</div><div class="value">{service['requests_total']}</div></section>
       <section class="card"><div class="label">Messages</div><div class="value">{service['messages_total']}</div></section>
@@ -473,6 +573,7 @@ def _render_status_html(payload: dict[str, Any]) -> str:
           <div>Workdir: <code>{html.escape(bridge['workdir'])}</code></div>
           <div>Streaming: <code>{html.escape(str(bridge['streaming']))}</code></div>
           <div>Status web: <code>{html.escape(str(bridge['status_web']['host']))}:{bridge['status_web']['port']}</code></div>
+          <div>Construction agent: <code>{html.escape(str(construction.get('enabled', False)))}</code></div>
         </div>
       </section>
     </div>
@@ -486,6 +587,325 @@ def _render_status_html(payload: dict[str, Any]) -> str:
       </table>
     </section>
   </main>
+</body>
+</html>"""
+
+
+def _render_construction_html(settings: Settings) -> str:
+    title = html.escape(settings.name)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Construction Ops - {title}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #efe7da;
+      --panel: #fffdf8;
+      --ink: #1c2228;
+      --muted: #616f7b;
+      --line: #d4cab6;
+      --accent: #b45309;
+      --accent-2: #0f766e;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      background:
+        radial-gradient(circle at top right, rgba(255, 231, 183, 0.8), transparent 32%),
+        linear-gradient(180deg, #f8f0e4, var(--bg));
+      color: var(--ink);
+    }}
+    main {{
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px 20px 36px;
+      display: grid;
+      gap: 18px;
+    }}
+    .hero, .panel {{
+      background: rgba(255, 253, 248, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 12px 30px rgba(28, 34, 40, 0.05);
+    }}
+    .hero {{
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 1.4fr 1fr;
+    }}
+    .hero h1, .panel h2 {{ margin: 0; }}
+    .subtle {{ color: var(--muted); }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }}
+    th, td {{
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }}
+    th {{
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+    }}
+    button {{
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 14px;
+      font: inherit;
+      color: white;
+      background: var(--accent);
+      cursor: pointer;
+    }}
+    button.secondary {{ background: var(--accent-2); }}
+    input, select, textarea {{
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px 12px;
+      font: inherit;
+      background: white;
+      color: inherit;
+    }}
+    textarea {{
+      min-height: 220px;
+      resize: vertical;
+    }}
+    .row {{
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      align-items: end;
+    }}
+    .button-row {{
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    pre {{
+      margin: 0;
+      white-space: pre-wrap;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      background: #fff9f0;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+    }}
+    @media (max-width: 960px) {{
+      .hero {{ grid-template-columns: 1fr; }}
+      .row {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <h1>Construction Ops Console</h1>
+        <p class="subtle">Bridge: {title}. Use this page to inspect registry data, trigger planning, confirm pending notes, and apply manual overrides.</p>
+        <div class="button-row">
+          <button id="refreshOverview">Refresh Overview</button>
+          <button class="secondary" id="generatePlan">Generate Today Plan</button>
+          <button class="secondary" id="replanButton">Replan From Reason</button>
+        </div>
+      </div>
+      <pre id="overviewBox">Loading overview…</pre>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Registry</h2>
+        <div class="row">
+          <label>Kind<select id="resourceKind">
+            <option value="employees">Employees</option>
+            <option value="sites">Sites</option>
+            <option value="requirements">Requirements</option>
+            <option value="vehicles">Vehicles</option>
+            <option value="rules">Rules</option>
+          </select></label>
+          <label>Work Date<input id="workDate" placeholder="YYYY-MM-DD"></label>
+          <label>Actor<input id="actorInput" value="web"></label>
+          <button type="button" id="loadResources">Load</button>
+        </div>
+        <textarea id="resourceEditor" placeholder='Paste a JSON object here, for example {{"name":"新员工","role_type":"木工"}}'></textarea>
+        <div class="button-row">
+          <button type="button" id="saveResource">Save Resource</button>
+        </div>
+        <pre id="resourceBox">No resource loaded yet.</pre>
+      </article>
+
+      <article class="panel">
+        <h2>Pending Notes</h2>
+        <div class="row">
+          <label>Note ID<input id="noteIdInput" placeholder="note id"></label>
+          <button type="button" id="loadNotes">Load Pending</button>
+          <button type="button" class="secondary" id="confirmNote">Confirm Note</button>
+        </div>
+        <pre id="notesBox">No pending notes loaded yet.</pre>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Latest Plan</h2>
+        <pre id="planBox">Plan output will appear here.</pre>
+      </article>
+      <article class="panel">
+        <h2>Overrides</h2>
+        <div class="row">
+          <label>Plan ID<input id="overridePlanId" placeholder="plan id"></label>
+          <label>Assignment ID<input id="overrideAssignmentId" placeholder="assignment id"></label>
+          <label>Employees<input id="overrideEmployees" placeholder="老周,小王"></label>
+          <label>Vehicle<input id="overrideVehicle" placeholder="V01"></label>
+        </div>
+        <div class="row">
+          <label>Reason Type<input id="overrideReasonType" value="manual_override"></label>
+          <label>Reason Text<input id="overrideReasonText" placeholder="why changed"></label>
+          <label>Should Learn<select id="overrideLearn"><option value="false">false</option><option value="true">true</option></select></label>
+          <button type="button" id="applyOverride">Apply Override</button>
+        </div>
+        <pre id="overrideBox">No overrides applied in this session.</pre>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Replan</h2>
+      <textarea id="replanReason" placeholder="例如：老王今天请假，7号车故障，重新排班。"></textarea>
+    </section>
+  </main>
+  <script>
+    const querySuffix = window.location.search || "";
+
+    async function apiGet(path) {{
+      const response = await fetch(path + querySuffix);
+      return response.json();
+    }}
+
+    async function apiPost(path, payload) {{
+      const response = await fetch(path + querySuffix, {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(payload),
+      }});
+      return response.json();
+    }}
+
+    function pretty(value) {{
+      return JSON.stringify(value, null, 2);
+    }}
+
+    const overviewBox = document.getElementById("overviewBox");
+    const resourceBox = document.getElementById("resourceBox");
+    const planBox = document.getElementById("planBox");
+    const notesBox = document.getElementById("notesBox");
+    const overrideBox = document.getElementById("overrideBox");
+
+    async function refreshOverview() {{
+      const payload = await apiGet("/api/construction/overview");
+      overviewBox.textContent = pretty(payload.data);
+      if (payload.data.latest_plan) {{
+        planBox.textContent = pretty(payload.data.latest_plan);
+      }}
+    }}
+
+    async function loadResources() {{
+      const kind = document.getElementById("resourceKind").value;
+      const payload = await apiGet(`/api/construction/resources?kind=${{encodeURIComponent(kind)}}`);
+      resourceBox.textContent = pretty(payload.data);
+      const sample = Array.isArray(payload.data) && payload.data.length ? payload.data[0] : {{}};
+      document.getElementById("resourceEditor").value = pretty(sample);
+    }}
+
+    async function saveResource() {{
+      const kind = document.getElementById("resourceKind").value;
+      const raw = document.getElementById("resourceEditor").value.trim();
+      const record = raw ? JSON.parse(raw) : {{}};
+      const payload = await apiPost("/api/construction/resource", {{ kind, record }});
+      resourceBox.textContent = pretty(payload.data);
+      await refreshOverview();
+    }}
+
+    async function loadNotes() {{
+      const payload = await apiGet("/api/construction/notes?status=pending_review");
+      notesBox.textContent = pretty(payload.data);
+    }}
+
+    async function confirmNote() {{
+      const noteId = document.getElementById("noteIdInput").value.trim();
+      if (!noteId) {{
+        return;
+      }}
+      const actor = document.getElementById("actorInput").value.trim() || "web";
+      const payload = await apiPost("/api/construction/confirm-note", {{ note_id: noteId, actor }});
+      notesBox.textContent = pretty(payload.data);
+      await refreshOverview();
+    }}
+
+    async function generatePlan() {{
+      const workDate = document.getElementById("workDate").value.trim();
+      const actor = document.getElementById("actorInput").value.trim() || "web";
+      const payload = await apiPost("/api/construction/plan/generate", {{ work_date: workDate || null, actor }});
+      planBox.textContent = pretty(payload.data);
+      document.getElementById("overridePlanId").value = payload.data.id || "";
+      await refreshOverview();
+    }}
+
+    async function replan() {{
+      const reason = document.getElementById("replanReason").value.trim();
+      const workDate = document.getElementById("workDate").value.trim();
+      const actor = document.getElementById("actorInput").value.trim() || "web";
+      if (!reason) {{
+        return;
+      }}
+      const payload = await apiPost("/api/construction/plan/replan", {{ reason, work_date: workDate || null, actor }});
+      planBox.textContent = pretty(payload.data.plan);
+      document.getElementById("overridePlanId").value = payload.data.plan.id || "";
+      await refreshOverview();
+    }}
+
+    async function applyOverride() {{
+      const payload = await apiPost("/api/construction/override", {{
+        plan_id: document.getElementById("overridePlanId").value.trim(),
+        assignment_id: document.getElementById("overrideAssignmentId").value.trim(),
+        new_employee_names: document.getElementById("overrideEmployees").value.split(",").map(item => item.trim()).filter(Boolean),
+        new_vehicle_code: document.getElementById("overrideVehicle").value.trim() || null,
+        changed_by: document.getElementById("actorInput").value.trim() || "web",
+        reason_type: document.getElementById("overrideReasonType").value.trim() || "manual_override",
+        reason_text: document.getElementById("overrideReasonText").value.trim(),
+        should_learn: document.getElementById("overrideLearn").value === "true",
+      }});
+      overrideBox.textContent = pretty(payload.data);
+      await refreshOverview();
+    }}
+
+    document.getElementById("refreshOverview").addEventListener("click", refreshOverview);
+    document.getElementById("loadResources").addEventListener("click", loadResources);
+    document.getElementById("saveResource").addEventListener("click", saveResource);
+    document.getElementById("loadNotes").addEventListener("click", loadNotes);
+    document.getElementById("confirmNote").addEventListener("click", confirmNote);
+    document.getElementById("generatePlan").addEventListener("click", generatePlan);
+    document.getElementById("replanButton").addEventListener("click", replan);
+    document.getElementById("applyOverride").addEventListener("click", applyOverride);
+
+    refreshOverview();
+    loadResources();
+    loadNotes();
+  </script>
 </body>
 </html>"""
 

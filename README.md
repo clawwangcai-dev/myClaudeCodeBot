@@ -23,6 +23,8 @@ It currently supports:
 
 The tutorial below starts from zero and ends with multiple Telegram bots, optional WhatsApp ingress, and a local web chat UI talking to Claude Code, Codex, and GitHub Copilot CLI on the same machine.
 
+Construction scheduling mode guide: [construction_agent_setup.md](construction_agent_setup.md)
+
 ### 1. What You Need
 
 Before you start, make sure this machine already has:
@@ -559,6 +561,8 @@ WhatsApp replies fail
 - 先跑通单 bot
 - 再在 Telegram 里切项目目录
 - 最后同时跑多个 Telegram bots，并可选接入 WhatsApp 和本地网页聊天页，对接本机 Claude Code、Codex 和 Copilot
+
+建筑调度模式说明见：[construction_agent_setup.md](construction_agent_setup.md)
 
 ### 1. 先准备好这些东西
 

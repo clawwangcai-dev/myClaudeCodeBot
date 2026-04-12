@@ -59,6 +59,10 @@ class Settings:
     whatsapp_api_base: str
     whatsapp_webhook_host: str
     whatsapp_webhook_port: int
+    construction_agent_enabled: bool
+    construction_agent_db_path: Path
+    construction_agent_seed_path: Path | None
+    construction_agent_auto_seed: bool
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
@@ -176,6 +180,18 @@ def _build_settings(
         ).rstrip("/"),
         whatsapp_webhook_host=values.get("WHATSAPP_WEBHOOK_HOST", "127.0.0.1").strip() or "127.0.0.1",
         whatsapp_webhook_port=max(1, int(whatsapp_webhook_port_raw)),
+        construction_agent_enabled=_parse_bool(values.get("CONSTRUCTION_AGENT_ENABLED"), default=False),
+        construction_agent_db_path=_resolve_path(
+            values.get("CONSTRUCTION_AGENT_DB_PATH"),
+            base_dir=base_dir,
+            default="construction_agent.sqlite3",
+        ),
+        construction_agent_seed_path=(
+            _resolve_path(values.get("CONSTRUCTION_AGENT_SEED_PATH"), base_dir=base_dir, default="construction_agent_seed.json")
+            if values.get("CONSTRUCTION_AGENT_SEED_PATH", "").strip()
+            else None
+        ),
+        construction_agent_auto_seed=_parse_bool(values.get("CONSTRUCTION_AGENT_AUTO_SEED"), default=True),
     )
 
 
@@ -226,6 +242,8 @@ def load_all_settings() -> list[Settings]:
             merged["APPROVAL_STORE_PATH"] = str(bot_data_dir / "approval_prefs.json")
         if "MEDIA_STORE_PATH" not in item_values:
             merged["MEDIA_STORE_PATH"] = str(bot_data_dir / ".telegram-media")
+        if "CONSTRUCTION_AGENT_DB_PATH" not in item_values:
+            merged["CONSTRUCTION_AGENT_DB_PATH"] = str(bot_data_dir / "construction_agent.sqlite3")
         if "STATUS_WEB_ENABLED" not in item_values:
             merged["STATUS_WEB_ENABLED"] = "false"
 

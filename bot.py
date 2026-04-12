@@ -20,6 +20,7 @@ from channel_keys import ConversationRef, parse_conversation_key
 from chat_log import ChatLogStore
 from claude_runner import format_text_reply
 from config import Settings, load_all_settings
+from construction_agent import ConstructionAgentService
 from codex_usage import load_codex_usage
 from media_handler import DownloadedMedia, MediaHandler, MediaHandlerError
 from reminder_scheduler import ReminderScheduler
@@ -75,6 +76,7 @@ class TelegramBot:
         workdirs: WorkdirStore,
         chat_log: ChatLogStore,
         reminders: ReminderScheduler | None,
+        construction_agent: ConstructionAgentService | None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -97,6 +99,7 @@ class TelegramBot:
             workdirs,
             chat_log,
             reminders,
+            construction_agent,
             self,
         )
 
@@ -325,6 +328,13 @@ class TelegramBot:
                 text=f"[Voice transcript]\n{transcript.text.strip() or '(empty transcription)'}",
             )
             self._core.remember_user_language(conversation, transcript.text)
+            if self._core.try_handle_construction_text(
+                conversation,
+                transcript.text,
+                source_type="voice",
+                audio_path=str(media.path),
+            ):
+                return
             prompt = self._media_handler.build_voice_prompt(transcript)
             self._core.run_prompt(conversation, prompt=prompt, start_text=None)
         except MediaHandlerError as exc:
@@ -992,6 +1002,7 @@ def _run_single_bot(settings: Settings) -> None:
     chat_log = ChatLogStore(settings.session_store_path.with_name("chat_log.json"))
     reminder_store = ReminderStore(settings.session_store_path.with_name("scheduled_reminders.json"))
     reminders = ReminderScheduler(settings, reminder_store)
+    construction_agent = ConstructionAgentService(settings) if settings.construction_agent_enabled else None
     bot = TelegramBot(
         settings,
         store,
@@ -1003,6 +1014,7 @@ def _run_single_bot(settings: Settings) -> None:
         workdirs,
         chat_log,
         reminders,
+        construction_agent,
     )
     if settings.status_web_enabled:
         start_status_server(
@@ -1013,6 +1025,7 @@ def _run_single_bot(settings: Settings) -> None:
             runtime_state,
             version_info,
             chat_log,
+            construction_agent,
             bot.submit_web_prompt,
         )
     if settings.whatsapp_enabled:
