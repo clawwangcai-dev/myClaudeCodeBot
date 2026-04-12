@@ -3,7 +3,8 @@
 
 vault:
   # Absolute path to your Obsidian vault
-  path: "/home/chao/projects/ObsidianVaults/openclaw"
+  # Set via OBSIDIAN_VAULT_PATH env var or .env file — do NOT hardcode here
+  path: ""
 
   # Folder structure within the vault
   folders:

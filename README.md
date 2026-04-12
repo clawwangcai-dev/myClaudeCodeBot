@@ -42,23 +42,38 @@ Important:
 ### 2. Clone The Project
 
 ```bash
-git clone https://github.com/clawwangcai-dev/myCodeBot.git ~/myCodeBot
-cd ~/myCodeBot
+git clone https://github.com/clawwangcai-dev/Bau-Dirigent.git ~/Bau-Dirigent
+cd ~/Bau-Dirigent
 ```
 
 ### 3. Create The Runtime Config
 
-Copy the example env file:
+Run the interactive setup wizard:
+
+```bash
+python3 init.py
+```
+
+The wizard will guide you through:
+1. **Telegram Bot Token** — required, get it from @BotFather
+2. **Bridge provider** — choose Claude, Codex, or Copilot
+3. **Default workspace** — the root directory where the agent operates
+4. **Obsidian skill** (optional) — set up voice transcription into an Obsidian vault
+
+The wizard writes a `.env` file in the project root. You can re-run it at any time — it only prompts for values that are still empty.
+
+For non-interactive (scripting / CI) use:
+
+```bash
+TELEGRAM_BOT_TOKEN=xxx python3 install_service.py init --no-input
+```
+
+Manual setup (alternative):
 
 ```bash
 mkdir -p ~/.config/telegram-claude-bridge
-cp ~/myCodeBot/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
-cp ~/myCodeBot/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
-```
-
-Edit the env file:
-
-```bash
+cp ~/Bau-Dirigent/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
+cp ~/Bau-Dirigent/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
 $EDITOR ~/.config/telegram-claude-bridge/env
 ```
 
@@ -103,22 +118,22 @@ CLAUDE_ALLOWED_WORKDIRS=~/projects/ObsidianVaults,~/projects/other-root
 Foreground:
 
 ```bash
-python3 ~/myCodeBot/bot.py
+python3 ~/Bau-Dirigent/bot.py
 ```
 
 Background service:
 
 ```bash
-python3 ~/myCodeBot/install_service.py install
-python3 ~/myCodeBot/install_service.py restart
-python3 ~/myCodeBot/install_service.py status
+python3 ~/Bau-Dirigent/install_service.py install
+python3 ~/Bau-Dirigent/install_service.py restart
+python3 ~/Bau-Dirigent/install_service.py status
 ```
 
 Linux manual service:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp ~/myCodeBot/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
+cp ~/Bau-Dirigent/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now telegram-claude-bridge.service
 journalctl --user -u telegram-claude-bridge.service -f
@@ -305,10 +320,10 @@ CLAUDE_TIMEOUT_SECONDS=300
 CLAUDE_STREAMING=true
 TELEGRAM_POLL_TIMEOUT=30
 TELEGRAM_EDIT_INTERVAL_SECONDS=1.0
-SESSION_STORE_PATH=~/myCodeBot/sessions.json
-WORKDIR_STORE_PATH=~/myCodeBot/chat_workdirs.json
-APPROVAL_STORE_PATH=~/myCodeBot/approval_prefs.json
-MEDIA_STORE_PATH=~/myCodeBot/.telegram-media
+SESSION_STORE_PATH=~/Bau-Dirigent/sessions.json
+WORKDIR_STORE_PATH=~/Bau-Dirigent/chat_workdirs.json
+APPROVAL_STORE_PATH=~/Bau-Dirigent/approval_prefs.json
+MEDIA_STORE_PATH=~/Bau-Dirigent/.telegram-media
 WHISPER_BIN=whisper
 WHISPER_MODEL=base
 WHISPER_FALLBACK_MODELS=tiny
@@ -334,7 +349,7 @@ Mode 1 means:
 Use the example:
 
 ```bash
-cp ~/myCodeBot/bots.example.json ~/.config/telegram-claude-bridge/bots.json
+cp ~/Bau-Dirigent/bots.example.json ~/.config/telegram-claude-bridge/bots.json
 $EDITOR ~/.config/telegram-claude-bridge/bots.json
 ```
 
@@ -564,23 +579,38 @@ WhatsApp replies fail
 ### 2. 克隆项目
 
 ```bash
-git clone https://github.com/clawwangcai-dev/myCodeBot.git ~/myCodeBot
-cd ~/myCodeBot
+git clone https://github.com/clawwangcai-dev/Bau-Dirigent.git ~/Bau-Dirigent
+cd ~/Bau-Dirigent
 ```
 
 ### 3. 准备运行配置
 
-先复制配置文件：
+运行交互式配置向导：
+
+```bash
+python3 init.py
+```
+
+向导会引导你完成：
+1. **Telegram Bot Token** — 必填，从 @BotFather 获取
+2. **桥接后端** — 选择 Claude、Codex 或 Copilot
+3. **默认工作区** — agent 执行操作的根目录
+4. **Obsidian 技能**（可选）— 设置语音转写到 Obsidian vault
+
+向导会在项目根目录生成 `.env` 文件。随时可以重新运行——只提示仍为空的配置项。
+
+非交互式（脚本 / CI）用法：
+
+```bash
+TELEGRAM_BOT_TOKEN=xxx python3 install_service.py init --no-input
+```
+
+手动配置（替代方案）：
 
 ```bash
 mkdir -p ~/.config/telegram-claude-bridge
-cp ~/myCodeBot/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
-cp ~/myCodeBot/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
-```
-
-编辑 env：
-
-```bash
+cp ~/Bau-Dirigent/systemd/telegram-claude-bridge.env.example ~/.config/telegram-claude-bridge/env
+cp ~/Bau-Dirigent/systemd/telegram-claude-bridge.claude-settings.json ~/.config/telegram-claude-bridge/claude-settings.json
 $EDITOR ~/.config/telegram-claude-bridge/env
 ```
 
@@ -625,22 +655,22 @@ CLAUDE_ALLOWED_WORKDIRS=~/projects/ObsidianVaults,~/projects/other-root
 前台直接跑：
 
 ```bash
-python3 ~/myCodeBot/bot.py
+python3 ~/Bau-Dirigent/bot.py
 ```
 
 安装为后台服务：
 
 ```bash
-python3 ~/myCodeBot/install_service.py install
-python3 ~/myCodeBot/install_service.py restart
-python3 ~/myCodeBot/install_service.py status
+python3 ~/Bau-Dirigent/install_service.py install
+python3 ~/Bau-Dirigent/install_service.py restart
+python3 ~/Bau-Dirigent/install_service.py status
 ```
 
 Linux 手动服务方式：
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp ~/myCodeBot/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
+cp ~/Bau-Dirigent/systemd/telegram-claude-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now telegram-claude-bridge.service
 journalctl --user -u telegram-claude-bridge.service -f
@@ -827,10 +857,10 @@ CLAUDE_TIMEOUT_SECONDS=300
 CLAUDE_STREAMING=true
 TELEGRAM_POLL_TIMEOUT=30
 TELEGRAM_EDIT_INTERVAL_SECONDS=1.0
-SESSION_STORE_PATH=~/myCodeBot/sessions.json
-WORKDIR_STORE_PATH=~/myCodeBot/chat_workdirs.json
-APPROVAL_STORE_PATH=~/myCodeBot/approval_prefs.json
-MEDIA_STORE_PATH=~/myCodeBot/.telegram-media
+SESSION_STORE_PATH=~/Bau-Dirigent/sessions.json
+WORKDIR_STORE_PATH=~/Bau-Dirigent/chat_workdirs.json
+APPROVAL_STORE_PATH=~/Bau-Dirigent/approval_prefs.json
+MEDIA_STORE_PATH=~/Bau-Dirigent/.telegram-media
 WHISPER_BIN=whisper
 WHISPER_MODEL=base
 WHISPER_FALLBACK_MODELS=tiny
@@ -858,7 +888,7 @@ STATUS_WEB_PORT=8765
 先复制示例文件：
 
 ```bash
-cp ~/myCodeBot/bots.example.json ~/.config/telegram-claude-bridge/bots.json
+cp ~/Bau-Dirigent/bots.example.json ~/.config/telegram-claude-bridge/bots.json
 $EDITOR ~/.config/telegram-claude-bridge/bots.json
 ```
 

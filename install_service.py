@@ -348,6 +348,256 @@ def uninstall_service(target: str) -> None:
     print(f"Uninstalled {SERVICE_NAME} for {target}.")
 
 
+# ---------------------------------------------------------------------------
+# Interactive init command
+# ---------------------------------------------------------------------------
+
+OBSIDIAN_SKILL_DIR = REPO_DIR / ".claude" / "skills" / "voice-bridge-obsidian"
+OBSIDIAN_SETTINGS_EXAMPLE = OBSIDIAN_SKILL_DIR / "config" / "settings.example.yaml"
+OBSIDIAN_SETTINGS_YAML = OBSIDIAN_SKILL_DIR / "config" / "settings.yaml"
+ENV_TEMPLATE = REPO_DIR / "systemd" / "telegram-claude-bridge.env.example"
+
+
+def _bi(en: str, zh: str) -> str:
+    """Bilingual prompt helper."""
+    return f"{en} / {zh}"
+
+
+def _parse_env_lines(text: str) -> dict[str, str]:
+    """Parse KEY=VALUE pairs from env file text, ignoring comments/blanks."""
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def _merge_env_lines(existing_text: str, overrides: dict[str, str]) -> str:
+    """Merge overrides into existing env file text, preserving comments and order."""
+    lines = existing_text.splitlines()
+    result: list[str] = []
+    written_keys: set[str] = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            result.append(line)
+            continue
+        key, _ = stripped.split("=", 1)
+        key = key.strip()
+        if key in overrides:
+            result.append(f"{key}={overrides[key]}")
+            written_keys.add(key)
+        else:
+            result.append(line)
+
+    for key, value in overrides.items():
+        if key not in written_keys:
+            result.append(f"{key}={value}")
+
+    return "\n".join(result) + "\n"
+
+
+def _prompt_input(label: str, *, default: str = "", required: bool = False) -> str:
+    """Prompt for a single value with optional default and required validation."""
+    prompt_text = f"  {label}"
+    if default:
+        prompt_text += f" [{default}]"
+    prompt_text += ": "
+
+    while True:
+        raw = input(prompt_text).strip()
+        if raw:
+            return raw
+        if default:
+            return default
+        if not required:
+            return ""
+        print("    " + _bi("This value is required.", "此项为必填项。"))
+
+
+def _prompt_yes_no(label: str, *, default: bool = False) -> bool:
+    """Prompt for a yes/no answer."""
+    hint = "Y/n" if default else "y/N"
+    raw = input(f"  {label} [{hint}]: ").strip().lower()
+    if not raw:
+        return default
+    return raw in ("y", "yes", "是")
+
+
+def _interactive_prompt(existing: dict[str, str]) -> dict[str, str]:
+    """Walk the user through essential config values. Returns env var overrides."""
+    overrides: dict[str, str] = {}
+
+    print()
+    print("=" * 50)
+    print(_bi("Bau-Dirigent Setup", "Bau-Dirigent 初始化配置"))
+    print("=" * 50)
+    print(f"  {_bi('Detected platform', '检测到平台')}: {detect_platform()}")
+    print()
+
+    # Step 1: TELEGRAM_BOT_TOKEN (required)
+    current_token = existing.get("TELEGRAM_BOT_TOKEN", "")
+    if current_token:
+        print(f"  TELEGRAM_BOT_TOKEN: {_bi('already set', '已设置')} ({current_token[:8]}...)")
+    else:
+        print(f"  {_bi('Step 1: Telegram Bot Token (required)', '步骤 1: Telegram Bot Token（必填）')}")
+        print(f"    {_bi('Get it from @BotFather on Telegram', '从 Telegram 的 @BotFather 获取')}")
+        token = _prompt_input("TELEGRAM_BOT_TOKEN", required=True)
+        overrides["TELEGRAM_BOT_TOKEN"] = token
+
+    # Step 2: BRIDGE_PROVIDER
+    current_provider = existing.get("BRIDGE_PROVIDER", "claude")
+    print(f"\n  {_bi('Step 2: Bridge provider', '步骤 2: 桥接后端')}")
+    print("    1) claude   (Claude Code CLI)")
+    print("    2) codex    (OpenAI Codex CLI)")
+    print("    3) copilot  (GitHub Copilot CLI)")
+    choice = _prompt_input(
+        _bi("Choose", "选择"),
+        default=current_provider,
+    )
+    provider_map = {"1": "claude", "2": "codex", "3": "copilot"}
+    provider = provider_map.get(choice, choice)
+    if provider != current_provider:
+        overrides["BRIDGE_PROVIDER"] = provider
+
+    # Step 3: CLAUDE_WORKDIR
+    current_workdir = existing.get("CLAUDE_WORKDIR", str(REPO_DIR))
+    print(f"\n  {_bi('Step 3: Default workspace', '步骤 3: 默认工作区')}")
+    print(f"    {_bi('Agent operates in this directory', 'Agent 在此目录下执行操作')}")
+    workdir = _prompt_input("CLAUDE_WORKDIR", default=current_workdir)
+    resolved = str(Path(workdir).expanduser().resolve())
+    if resolved != current_workdir:
+        overrides["CLAUDE_WORKDIR"] = resolved
+
+    # Step 4: Obsidian skill
+    print(f"\n  {_bi('Step 4: Obsidian voice-bridge skill', '步骤 4: Obsidian 语音桥接技能')}")
+    print(f"    {_bi('Enables voice transcription and note archiving into an Obsidian vault', '启用语音转写和笔记归档到 Obsidian vault')}")
+    do_obsidian = _prompt_yes_no(
+        _bi("Set up Obsidian skill?", "设置 Obsidian 技能？"),
+        default=False,
+    )
+    if do_obsidian:
+        current_vault = existing.get("OBSIDIAN_VAULT_PATH", "")
+        vault_path = _prompt_input("OBSIDIAN_VAULT_PATH", default=current_vault, required=True)
+        resolved_vault = str(Path(vault_path).expanduser().resolve())
+        overrides["OBSIDIAN_VAULT_PATH"] = resolved_vault
+
+        if not resolved_vault or not Path(resolved_vault).is_dir():
+            print(f"    ⚠ {_bi('Path does not exist, will be created on first use', '路径不存在，首次使用时会自动创建')}")
+
+        if OBSIDIAN_SETTINGS_EXAMPLE.exists() and not OBSIDIAN_SETTINGS_YAML.exists():
+            shutil.copyfile(OBSIDIAN_SETTINGS_EXAMPLE, OBSIDIAN_SETTINGS_YAML)
+            print(f"    {_bi('Bootstrapped', '已生成')} settings.yaml {_bi('from example template', '（基于示例模板）')}")
+
+    return overrides
+
+
+def _noninteractive_defaults(existing: dict[str, str]) -> dict[str, str]:
+    """Compute defaults for --no-input mode. Returns env var overrides."""
+    overrides: dict[str, str] = {}
+
+    token = existing.get("TELEGRAM_BOT_TOKEN", "") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        print("Error: TELEGRAM_BOT_TOKEN is required but not set.", file=sys.stderr)
+        print("Set it in the env file or via environment variable.", file=sys.stderr)
+        raise SystemExit(1)
+
+    if "BRIDGE_PROVIDER" not in existing:
+        overrides["BRIDGE_PROVIDER"] = "claude"
+    if "CLAUDE_WORKDIR" not in existing:
+        overrides["CLAUDE_WORKDIR"] = str(REPO_DIR)
+
+    return overrides
+
+
+def run_init(*, no_input: bool = False) -> Path:
+    """Run the interactive (or non-interactive) first-time setup.
+
+    Returns the path to the generated .env file.
+    """
+    env_path = REPO_DIR / ".env"
+
+    # Load existing values
+    existing: dict[str, str] = {}
+    if env_path.exists():
+        existing = _parse_env_lines(env_path.read_text(encoding="utf-8"))
+    else:
+        # Also check platform config dir for existing env
+        platform_env = env_path_for(detect_platform())
+        if platform_env.exists():
+            existing = _parse_env_lines(platform_env.read_text(encoding="utf-8"))
+
+    # Gather overrides
+    if no_input:
+        overrides = _noninteractive_defaults(existing)
+    else:
+        overrides = _interactive_prompt(existing)
+
+    if not overrides:
+        print(_bi("\nNo changes needed.", "\n无需修改。"))
+        return env_path
+
+    # Summary
+    print()
+    print("=" * 50)
+    print(_bi("Summary / 配置摘要", "配置摘要"))
+    print("=" * 50)
+    for key, value in overrides.items():
+        display = value if len(value) < 50 else value[:47] + "..."
+        print(f"  {key} = {display}")
+    print(f"  {_bi('Config file', '配置文件')}: {env_path}")
+
+    # Confirm
+    if not no_input:
+        if not _prompt_yes_no(_bi("Write config?", "写入配置？"), default=True):
+            print(_bi("Aborted.", "已取消。"))
+            return env_path
+
+    # Generate / update .env
+    if env_path.exists():
+        original = env_path.read_text(encoding="utf-8")
+        merged = _merge_env_lines(original, overrides)
+    elif ENV_TEMPLATE.exists():
+        template_text = ENV_TEMPLATE.read_text(encoding="utf-8")
+        merged = _merge_env_lines(template_text, overrides)
+    else:
+        lines = [f"{k}={v}" for k, v in overrides.items()]
+        merged = "\n".join(lines) + "\n"
+
+    env_path.write_text(merged, encoding="utf-8")
+
+    # Also sync to platform config dir (used by install_service / launchd / systemd)
+    target = detect_platform()
+    platform_env = env_path_for(target)
+    platform_dir = platform_env.parent
+    platform_dir.mkdir(parents=True, exist_ok=True)
+    if platform_env.exists():
+        platform_original = platform_env.read_text(encoding="utf-8")
+        platform_merged = _merge_env_lines(platform_original, overrides)
+    else:
+        platform_merged = merged
+    platform_env.write_text(platform_merged, encoding="utf-8")
+
+    print()
+    print(_bi("Done! Configuration written to", "完成！配置已写入"), env_path)
+    print(f"  {_bi('Also synced to', '已同步到')}: {platform_env}")
+    print()
+    print(_bi("Next steps:", "下一步："))
+    print(f"  1. {_bi('Review config', '检查配置')}: $EDITOR {env_path}")
+    print(f"  2. {_bi('Start in foreground', '前台运行')}: set -a && source .env && set +a && python3 bot.py")
+    print(f"  3. {_bi('Or install as service', '或安装为后台服务')}: python3 install_service.py install")
+
+    return env_path
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Manage the Telegram agent bridge background service.")
     parser.add_argument("--platform", choices=["linux", "macos", "windows"], help="Override platform detection.")
@@ -356,6 +606,9 @@ def parse_args() -> argparse.Namespace:
 
     install_parser = subparsers.add_parser("install", help="Install the background service.")
     install_parser.add_argument("--no-start", action="store_true", help="Install but do not start.")
+
+    init_parser = subparsers.add_parser("init", help="Interactive first-time setup / 交互式初始化配置")
+    init_parser.add_argument("--no-input", action="store_true", help="Non-interactive: use defaults, no prompts")
 
     subparsers.add_parser("status", help="Show service status.")
     subparsers.add_parser("uninstall", help="Remove the installed service.")
@@ -371,6 +624,9 @@ def main() -> None:
     args = parse_args()
     target = args.platform or detect_platform()
 
+    if args.command == "init":
+        run_init(no_input=getattr(args, "no_input", False))
+        return
     if args.command == "install":
         install_service(target, start=not args.no_start)
         return
