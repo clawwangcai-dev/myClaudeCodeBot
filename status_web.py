@@ -742,6 +742,19 @@ def _render_construction_html(settings: Settings) -> str:
       font-size: 13px;
       line-height: 1.5;
     }}
+    .operator-tools {{
+      padding: 0;
+      overflow: hidden;
+    }}
+    .operator-tools summary {{
+      background: #f6efe2;
+      border-bottom: 1px solid var(--line);
+    }}
+    .detail-body {{
+      padding: 18px;
+      display: grid;
+      gap: 18px;
+    }}
     pre {{
       margin: 0;
       white-space: pre-wrap;
@@ -1020,7 +1033,7 @@ def _render_construction_html(settings: Settings) -> str:
     <section class="hero">
       <div>
         <h1>Construction Ops Console</h1>
-        <p class="subtle">Bridge: {title}. Use this page to inspect registry data, trigger planning, confirm pending notes, and apply manual overrides.</p>
+        <p class="subtle">Bridge: {title}. 这里默认是老板视图，优先看今日排班、风险提醒和手动改排，不再把底层 JSON 台账放在主页面。</p>
         <div class="button-row">
           <button id="refreshOverview">Refresh Overview</button>
           <button class="secondary" id="generatePlan">Generate Today Plan</button>
@@ -1031,39 +1044,6 @@ def _render_construction_html(settings: Settings) -> str:
       <section id="overviewBox" class="metric-grid">
         <div class="metric"><div class="label">Loading</div><div class="value">…</div></div>
       </section>
-    </section>
-
-    <section class="grid">
-      <article class="panel">
-        <h2>Registry</h2>
-        <div class="row">
-          <label>Kind<select id="resourceKind">
-            <option value="employees">Employees</option>
-            <option value="sites">Sites</option>
-            <option value="requirements">Requirements</option>
-            <option value="vehicles">Vehicles</option>
-            <option value="rules">Rules</option>
-          </select></label>
-          <label>Work Date<input id="workDate" placeholder="YYYY-MM-DD"></label>
-          <label>Actor<input id="actorInput" value="web"></label>
-          <button type="button" id="loadResources">Load</button>
-        </div>
-        <textarea id="resourceEditor" placeholder='Paste a JSON object here, for example {{"name":"新员工","role_type":"木工"}}'></textarea>
-        <div class="button-row">
-          <button type="button" id="saveResource">Save Resource</button>
-        </div>
-        <pre id="resourceBox">No resource loaded yet.</pre>
-      </article>
-
-      <article class="panel">
-        <h2>Pending Notes</h2>
-        <div class="row">
-          <label>Note ID<input id="noteIdInput" placeholder="note id"></label>
-          <button type="button" id="loadNotes">Load Pending</button>
-          <button type="button" class="secondary" id="confirmNote">Confirm Note</button>
-        </div>
-        <pre id="notesBox">No pending notes loaded yet.</pre>
-      </article>
     </section>
 
     <section class="grid">
@@ -1120,6 +1100,44 @@ def _render_construction_html(settings: Settings) -> str:
       <h2>Replan</h2>
       <textarea id="replanReason" placeholder="例如：老王今天请假，7号车故障，重新排班。"></textarea>
     </section>
+
+    <details class="panel operator-tools no-print" id="operatorTools">
+      <summary>Operator Tools</summary>
+      <div class="detail-body">
+        <section class="grid">
+          <article>
+            <h2>Registry</h2>
+            <div class="row">
+              <label>Kind<select id="resourceKind">
+                <option value="employees">Employees</option>
+                <option value="sites">Sites</option>
+                <option value="requirements">Requirements</option>
+                <option value="vehicles">Vehicles</option>
+                <option value="rules">Rules</option>
+              </select></label>
+              <label>Work Date<input id="workDate" placeholder="YYYY-MM-DD"></label>
+              <label>Actor<input id="actorInput" value="web"></label>
+              <button type="button" id="loadResources">Load</button>
+            </div>
+            <textarea id="resourceEditor" placeholder='Paste a JSON object here, for example {{"name":"新员工","role_type":"木工"}}'></textarea>
+            <div class="button-row">
+              <button type="button" id="saveResource">Save Resource</button>
+            </div>
+            <pre id="resourceBox">Open Operator Tools to inspect raw registry JSON.</pre>
+          </article>
+
+          <article>
+            <h2>Pending Notes</h2>
+            <div class="row">
+              <label>Note ID<input id="noteIdInput" placeholder="note id"></label>
+              <button type="button" id="loadNotes">Load Pending</button>
+              <button type="button" class="secondary" id="confirmNote">Confirm Note</button>
+            </div>
+            <pre id="notesBox">Open Operator Tools to load pending note details.</pre>
+          </article>
+        </section>
+      </div>
+    </details>
   </main>
   <script>
     const querySuffix = window.location.search || "";
@@ -1199,7 +1217,7 @@ def _render_construction_html(settings: Settings) -> str:
           <div class="crew-member">
             <div>
               <strong>${{escapeHtml(name)}}</strong>
-              <div class="crew-note">${{escapeHtml(noteBits.join(" · ") || "现场作业"))}}</div>
+              <div class="crew-note">${{escapeHtml(noteBits.join(" · ") || "现场作业")}}</div>
             </div>
           </div>
         `;
@@ -1456,9 +1474,11 @@ def _render_construction_html(settings: Settings) -> str:
     const notesBox = document.getElementById("notesBox");
     const overrideBox = document.getElementById("overrideBox");
     const overrideHint = document.getElementById("overrideHint");
+    const operatorTools = document.getElementById("operatorTools");
     window.__constructionEmployees = [];
     window.__latestConstructionPlan = null;
     window.__selectedAssignmentId = "";
+    window.__operatorToolsLoaded = false;
 
     async function refreshOverview() {{
       const payload = await apiGet("/api/construction/overview");
@@ -1591,10 +1611,16 @@ def _render_construction_html(settings: Settings) -> str:
         trigger.dataset.siteName || "",
       );
     }});
+    operatorTools.addEventListener("toggle", () => {{
+      if (!operatorTools.open || window.__operatorToolsLoaded) {{
+        return;
+      }}
+      window.__operatorToolsLoaded = true;
+      loadResources();
+      loadNotes();
+    }});
 
     refreshOverview();
-    loadResources();
-    loadNotes();
     apiGet("/api/construction/resources?kind=employees").then(payload => {{
       if (payload && Array.isArray(payload.data)) {{
         window.__constructionEmployees = payload.data;
