@@ -132,6 +132,12 @@ def _build_handler(
                     return
                 self._send_html(_render_construction_html(settings))
                 return
+            if parsed.path == "/construction/resources":
+                if construction_agent is None or not construction_agent.enabled:
+                    self.send_error(404, "Construction agent not enabled")
+                    return
+                self._send_html(_render_resources_html(settings))
+                return
             self.send_error(404, "Not Found")
 
         def do_POST(self) -> None:  # noqa: N802
@@ -209,12 +215,37 @@ def _build_handler(
                 return
             self.send_error(404, "Not Found")
 
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        def do_DELETE(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if not _is_authorized(settings, self.headers.get("Authorization"), parsed.query):
+                self._send_unauthorized()
+                return
+            if construction_agent is None or not construction_agent.enabled:
+                self.send_error(404, "Construction agent not enabled")
+                return
+            qs = parse_qs(parsed.query)
+            if parsed.path == "/api/construction/resource":
+                kind = (qs.get("kind") or [""])[0].strip().lower()
+                record_id = (qs.get("id") or [""])[0].strip()
+                if not kind or not record_id:
+                    self.send_error(400, "kind and id query params are required")
+                    return
+                try:
+                    result = construction_agent.delete_resource(kind, record_id)
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=400)
+                    return
+                if not result.get("ok"):
+                    self._send_json(result, status=404)
+                    return
+                self._send_json(result)
+                return
+            self.send_error(404, "Not Found")
             LOGGER.info("%s - %s", self.address_string(), format % args)
 
-        def _send_json(self, payload: dict[str, Any]) -> None:
+        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
@@ -589,6 +620,313 @@ def _render_status_html(payload: dict[str, Any]) -> str:
       </table>
     </section>
   </main>
+</body>
+</html>"""
+
+
+
+def _render_resources_html(settings: Settings) -> str:
+    title = settings.name
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resources \u2014 {title}</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f7f6f3; color: #2c2c2c; }}
+  main {{ max-width: 1100px; margin: 0 auto; padding: 20px; }}
+  h1 {{ font-size: 1.3em; }}
+  a.back {{ display: inline-block; margin-bottom: 16px; color: #555; text-decoration: none; }}
+  a.back:hover {{ color: #000; }}
+  .tabs {{ display: flex; gap: 0; border-bottom: 2px solid #e0ddd8; margin-bottom: 16px; }}
+  .tab {{ padding: 10px 22px; cursor: pointer; border: none; background: none; font-size: 0.95em; color: #777; border-bottom: 2px solid transparent; margin-bottom: -2px; }}
+  .tab.active {{ color: #0f766e; border-bottom-color: #0f766e; font-weight: 600; }}
+  .tab:hover {{ color: #333; }}
+  .toolbar {{ display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }}
+  .toolbar input {{ flex: 1; min-width: 180px; padding: 8px 12px; border: 1px solid #d5d2cc; border-radius: 6px; }}
+  button, .btn {{ padding: 8px 16px; border-radius: 6px; border: 1px solid #d5d2cc; background: #fff; cursor: pointer; font-size: 0.9em; }}
+  button:hover, .btn:hover {{ background: #f0ede8; }}
+  button.primary {{ background: #0f766e; color: #fff; border-color: #0f766e; }}
+  button.primary:hover {{ background: #0d6560; }}
+  button.danger {{ color: #c0392b; }}
+  button.danger:hover {{ background: #fdecea; }}
+  table {{ width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
+  th {{ text-align: left; padding: 10px 12px; background: #f0ede8; font-size: 0.82em; text-transform: uppercase; letter-spacing: 0.04em; color: #777; }}
+  td {{ padding: 8px 12px; border-top: 1px solid #eee; font-size: 0.9em; }}
+  tr:hover {{ background: #faf9f6; }}
+  td input, td select {{ width: 100%; padding: 4px 6px; border: 1px solid #d5d2cc; border-radius: 4px; font-size: 0.88em; box-sizing: border-box; }}
+  .actions {{ white-space: nowrap; }}
+  .hidden {{ display: none; }}
+  .empty-state {{ text-align: center; padding: 40px; color: #aaa; }}
+  #tabContent {{ min-height: 200px; }}
+</style>
+</head>
+<body>
+<main>
+  <a href="/construction" class="back">\u2190 Back to Console</a>
+  <h1>Resource Management</h1>
+  <div class="tabs">
+    <button class="tab active" data-kind="employees">Employees</button>
+    <button class="tab" data-kind="sites">Sites</button>
+    <button class="tab" data-kind="vehicles">Vehicles</button>
+  </div>
+  <div class="toolbar">
+    <input id="searchInput" placeholder="Search\u2026">
+    <button class="primary" id="addBtn">+ Add</button>
+  </div>
+  <div id="tabContent"><div class="empty-state">Loading\u2026</div></div>
+</main>
+<script>
+(function() {{
+  let currentKind = "employees";
+  let allRows = [];
+  const searchInput = document.getElementById("searchInput");
+  const addBtn = document.getElementById("addBtn");
+  const tabContent = document.getElementById("tabContent");
+
+  const COLUMNS = {{
+    employees: [
+      {{ key: "name", label: "Name" }},
+      {{ key: "role_type", label: "Role" }},
+      {{ key: "primary_skill", label: "Primary Skill" }},
+      {{ key: "certificates", label: "Certificates" }},
+      {{ key: "can_drive", label: "Can Drive" }},
+      {{ key: "can_lead_team", label: "Can Lead" }},
+      {{ key: "availability_status", label: "Status" }},
+    ],
+    sites: [
+      {{ key: "name", label: "Name" }},
+      {{ key: "site_code", label: "Code" }},
+      {{ key: "address", label: "Address" }},
+      {{ key: "required_headcount", label: "Headcount" }},
+      {{ key: "risk_level", label: "Risk" }},
+      {{ key: "urgency_level", label: "Urgency" }},
+      {{ key: "customer_priority", label: "Priority" }},
+    ],
+    vehicles: [
+      {{ key: "vehicle_code", label: "Code" }},
+      {{ key: "plate_number", label: "Plate" }},
+      {{ key: "vehicle_type", label: "Type" }},
+      {{ key: "seat_capacity", label: "Seats" }},
+      {{ key: "current_status", label: "Status" }},
+      {{ key: "maintenance_status", label: "Maintenance" }},
+    ],
+  }};
+
+  function esc(s) {{
+    const d = document.createElement("div");
+    d.textContent = String(s);
+    return d.innerHTML;
+  }}
+
+  function formatCell(val) {{
+    if (val === null || val === undefined) return "";
+    if (typeof val === "boolean") return val ? "Yes" : "No";
+    if (Array.isArray(val)) return esc(val.join(", "));
+    if (typeof val === "object") return esc(JSON.stringify(val));
+    return esc(String(val));
+  }}
+
+  async function apiGet(url) {{
+    const r = await fetch(url);
+    return r.json();
+  }}
+  async function apiPost(url, body) {{
+    const r = await fetch(url, {{ method: "POST", headers: {{"Content-Type":"application/json"}}, body: JSON.stringify(body) }});
+    return r.json();
+  }}
+  async function apiDelete(url) {{
+    const r = await fetch(url, {{ method: "DELETE" }});
+    return r.json();
+  }}
+
+  function buildTable(filtered) {{
+    const cols = COLUMNS[currentKind];
+    if (filtered.length === 0) {{
+      tabContent.textContent = "";
+      const p = document.createElement("div");
+      p.className = "empty-state";
+      p.textContent = "No records found.";
+      tabContent.appendChild(p);
+      return;
+    }}
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    let hrow = "<tr>";
+    cols.forEach(c => hrow += "<th>" + esc(c.label) + "</th>");
+    hrow += "<th></th></tr>";
+    thead.innerHTML = hrow;
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    filtered.forEach(row => {{
+      const tr = document.createElement("tr");
+      tr.dataset.id = row.id || "";
+      cols.forEach(c => {{
+        const td = document.createElement("td");
+        td.className = "ro";
+        td.textContent = formatCell(row[c.key]).replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">");
+        // Use innerHTML only for the already-escaped formatCell output
+        td.innerHTML = formatCell(row[c.key]) || "";
+        tr.appendChild(td);
+      }});
+      const actTd = document.createElement("td");
+      actTd.className = "actions";
+      const editBtn = document.createElement("button");
+      editBtn.className = "edit-btn";
+      editBtn.textContent = "Edit";
+      const delBtn = document.createElement("button");
+      delBtn.className = "danger del-btn";
+      delBtn.textContent = "Delete";
+      actTd.appendChild(editBtn);
+      actTd.appendChild(delBtn);
+      tr.appendChild(actTd);
+      tbody.appendChild(tr);
+    }});
+    table.appendChild(tbody);
+    tabContent.textContent = "";
+    tabContent.appendChild(table);
+  }}
+
+  function renderTable() {{
+    const cols = COLUMNS[currentKind];
+    const query = searchInput.value.toLowerCase();
+    const filtered = allRows.filter(row => {{
+      if (!query) return true;
+      return cols.some(c => String(row[c.key] ?? "").toLowerCase().includes(query));
+    }});
+    buildTable(filtered);
+  }}
+
+  function switchToEdit(tr, row, isNew) {{
+    const cols = COLUMNS[currentKind];
+    tr.textContent = "";
+    tr.classList.add("editing");
+    cols.forEach(c => {{
+      const td = document.createElement("td");
+      const val = row[c.key] ?? "";
+      if (typeof val === "boolean") {{
+        const sel = document.createElement("select");
+        sel.name = c.key;
+        const optY = document.createElement("option");
+        optY.value = "true"; optY.textContent = "Yes"; optY.selected = val;
+        const optN = document.createElement("option");
+        optN.value = "false"; optN.textContent = "No"; optN.selected = !val;
+        sel.appendChild(optY); sel.appendChild(optN);
+        td.appendChild(sel);
+      }} else {{
+        const inp = document.createElement("input");
+        inp.name = c.key;
+        inp.value = String(val);
+        td.appendChild(inp);
+      }}
+      tr.appendChild(td);
+    }});
+    const actTd = document.createElement("td");
+    actTd.className = "actions";
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "primary save-btn";
+    saveBtn.textContent = isNew ? "Create" : "Save";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "cancel-btn";
+    cancelBtn.textContent = "Cancel";
+    actTd.appendChild(saveBtn);
+    actTd.appendChild(cancelBtn);
+    tr.appendChild(actTd);
+  }}
+
+  async function loadKind(kind) {{
+    currentKind = kind;
+    searchInput.value = "";
+    const payload = await apiGet("/api/construction/resources?kind=" + kind);
+    allRows = (payload.data || []).filter(r => {{
+      if (kind === "employees") return r.availability_status !== "inactive";
+      if (kind === "vehicles") return r.current_status !== "decommissioned";
+      if (kind === "sites") return r.risk_level !== "closed";
+      return true;
+    }});
+    renderTable();
+  }}
+
+  document.querySelectorAll(".tab").forEach(btn => {{
+    btn.addEventListener("click", () => {{
+      document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      loadKind(btn.dataset.kind);
+    }});
+  }});
+
+  searchInput.addEventListener("input", () => renderTable());
+
+  addBtn.addEventListener("click", () => {{
+    const cols = COLUMNS[currentKind];
+    const newRow = {{ id: "" }};
+    cols.forEach(c => newRow[c.key] = "");
+    // Re-render to ensure tbody exists
+    renderTable();
+    const tbody = tabContent.querySelector("tbody");
+    if (!tbody) return;
+    const tr = document.createElement("tr");
+    tr.classList.add("editing");
+    switchToEdit(tr, newRow, true);
+    tbody.insertBefore(tr, tbody.firstChild);
+  }});
+
+  tabContent.addEventListener("click", async (e) => {{
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const tr = btn.closest("tr");
+    if (!tr) return;
+
+    if (btn.classList.contains("edit-btn")) {{
+      const rid = tr.dataset.id;
+      const row = allRows.find(r => r.id === rid);
+      if (!row) return;
+      switchToEdit(tr, row, false);
+    }}
+
+    if (btn.classList.contains("save-btn")) {{
+      const rid = tr.dataset.id;
+      const cols = COLUMNS[currentKind];
+      const record = {{}};
+      if (rid) record.id = rid;
+      tr.querySelectorAll("input, select").forEach(el => {{
+        let val = el.value;
+        if (el.name === "seat_capacity" || el.name === "required_headcount") {{
+          val = val ? parseInt(val, 10) : null;
+        }}
+        if (el.tagName === "SELECT" && (el.name === "can_drive" || el.name === "can_lead_team")) {{
+          val = el.value === "true";
+        }}
+        record[el.name] = val;
+      }});
+      try {{
+        const payload = await apiPost("/api/construction/resource", {{ kind: currentKind, record }});
+        if (payload.ok) await loadKind(currentKind);
+        else alert(payload.error || "Save failed");
+      }} catch(err) {{ alert("Error: " + err.message); }}
+    }}
+
+    if (btn.classList.contains("cancel-btn")) {{
+      await loadKind(currentKind);
+    }}
+
+    if (btn.classList.contains("del-btn")) {{
+      const rid = tr.dataset.id;
+      if (!rid) {{ tr.remove(); return; }}
+      if (!confirm("Delete this " + currentKind.slice(0,-1) + " record?")) return;
+      try {{
+        const payload = await apiDelete("/api/construction/resource?kind=" + currentKind + "&id=" + rid);
+        if (payload.ok) tr.remove();
+        else alert(payload.error || "Delete failed");
+      }} catch(err) {{ alert("Error: " + err.message); }}
+    }}
+  }});
+
+  loadKind("employees");
+}})();
+</script>
 </body>
 </html>"""
 
@@ -1028,6 +1366,30 @@ def _render_construction_html(settings: Settings) -> str:
         box-shadow: none;
       }}
     }}
+    /* Modal overlay */
+    .modal-overlay {{
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.35); backdrop-filter: blur(2px);
+      z-index: 100; display: flex; align-items: center; justify-content: center;
+      animation: fadeIn 160ms ease;
+    }}
+    @keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+    .modal-content {{
+      background: #fff; border-radius: 14px; padding: 28px 32px;
+      max-width: 720px; width: 92%; max-height: 88vh; overflow-y: auto;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.18);
+      animation: slideUp 200ms ease;
+    }}
+    @keyframes slideUp {{ from {{ transform: translateY(24px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
+    .modal-header {{
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;
+    }}
+    .modal-header h2 {{ margin: 0; font-size: 1.15em; }}
+    .modal-close {{
+      background: none; border: none; font-size: 1.6em; cursor: pointer;
+      color: #999; padding: 0 4px; line-height: 1;
+    }}
+    .modal-close:hover {{ color: #333; }}
   </style>
 </head>
 <body>
@@ -1041,6 +1403,7 @@ def _render_construction_html(settings: Settings) -> str:
           <button class="secondary" id="generatePlan">Generate Today Plan</button>
           <button class="secondary" id="replanButton">Replan From Reason</button>
           <button class="secondary no-print" id="printPlan">Print Day Report</button>
+          <a href="/construction/resources" class="secondary" style="display:inline-block;padding:8px 16px;text-decoration:none;">Resources</a>
         </div>
       </div>
       <section id="overviewBox" class="metric-grid">
@@ -1079,23 +1442,30 @@ def _render_construction_html(settings: Settings) -> str:
           <div class="empty-state">Plan output will appear here.</div>
         </section>
       </article>
-      <article class="panel">
-        <h2>Overrides</h2>
-        <p id="overrideHint" class="subtle">Click “Prepare Override” on any site card to prefill this form.</p>
-        <div class="row">
-          <label>Plan ID<input id="overridePlanId" placeholder="plan id"></label>
-          <label>Assignment ID<input id="overrideAssignmentId" placeholder="assignment id"></label>
-          <label>Employees<input id="overrideEmployees" placeholder="老周,小王"></label>
-          <label>Vehicle<input id="overrideVehicle" placeholder="V01"></label>
+
+      <!-- Override Modal -->
+      <div id="overrideModal" class="modal-overlay" style="display:none;">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>Override Assignment</h2>
+            <button type="button" class="modal-close" id="overrideModalClose">&times;</button>
+          </div>
+          <p id="overrideHint" class="subtle">Editing assignment from selected site card.</p>
+          <div class="row">
+            <label>Plan ID<input id="overridePlanId" placeholder="plan id"></label>
+            <label>Assignment ID<input id="overrideAssignmentId" placeholder="assignment id"></label>
+            <label>Employees<input id="overrideEmployees" placeholder="老周,小王"></label>
+            <label>Vehicle<input id="overrideVehicle" placeholder="V01"></label>
+          </div>
+          <div class="row">
+            <label>Reason Type<input id="overrideReasonType" value="manual_override"></label>
+            <label>Reason Text<input id="overrideReasonText" placeholder="why changed"></label>
+            <label>Should Learn<select id="overrideLearn"><option value="false">false</option><option value="true">true</option></select></label>
+            <button type="button" id="applyOverride">Apply Override</button>
+          </div>
+          <pre id="overrideBox">No overrides applied in this session.</pre>
         </div>
-        <div class="row">
-          <label>Reason Type<input id="overrideReasonType" value="manual_override"></label>
-          <label>Reason Text<input id="overrideReasonText" placeholder="why changed"></label>
-          <label>Should Learn<select id="overrideLearn"><option value="false">false</option><option value="true">true</option></select></label>
-          <button type="button" id="applyOverride">Apply Override</button>
-        </div>
-        <pre id="overrideBox">No overrides applied in this session.</pre>
-      </article>
+      </div>
     </section>
 
     <section class="panel">
@@ -1318,7 +1688,7 @@ def _render_construction_html(settings: Settings) -> str:
         risk_only: "只看风险工地",
         gap_only: "只看缺口工地",
       }}[viewState.filter] || "全部工地";
-      const searchLabel = viewState.search ? `，搜索“${{escapeHtml(viewState.search)}}”` : "";
+      const searchLabel = viewState.search ? `，搜索"${{escapeHtml(viewState.search)}}"` : "";
       planViewCaption.innerHTML = `当前视图：${{escapeHtml(filterLabel)}}，${{escapeHtml(modeLabel)}}，显示 ${{escapeHtml(visibleCount)}} / ${{escapeHtml(totalCount)}} 个工地${{searchLabel}}。`;
     }}
 
@@ -1335,9 +1705,27 @@ def _render_construction_html(settings: Settings) -> str:
       if (window.__latestConstructionPlan) {{
         renderPlan(window.__latestConstructionPlan);
       }}
+      document.getElementById("overrideModal").style.display = "flex";
       document.getElementById("overrideEmployees").focus();
-      document.getElementById("overrideEmployees").scrollIntoView({{ behavior: "smooth", block: "center" }});
     }}
+
+    function closeOverrideModal() {{
+      document.getElementById("overrideModal").style.display = "none";
+      window.__selectedAssignmentId = "";
+      if (window.__latestConstructionPlan) {{
+        renderPlan(window.__latestConstructionPlan);
+      }}
+    }}
+
+    document.getElementById("overrideModalClose").addEventListener("click", closeOverrideModal);
+    document.getElementById("overrideModal").addEventListener("click", (e) => {{
+      if (e.target === e.currentTarget) closeOverrideModal();
+    }});
+    document.addEventListener("keydown", (e) => {{
+      if (e.key === "Escape" && document.getElementById("overrideModal").style.display !== "none") {{
+        closeOverrideModal();
+      }}
+    }});
 
     function rerenderLatestPlan() {{
       if (window.__latestConstructionPlan) {{

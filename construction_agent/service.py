@@ -673,6 +673,32 @@ class ConstructionAgentService:
             conn.commit()
             return saved
 
+    # Soft-delete status values per resource kind
+    _DELETE_STATUS: dict[str, tuple[str, str]] = {
+        "employees": ("availability_status", "inactive"),
+        "vehicles": ("current_status", "decommissioned"),
+        "sites": ("risk_level", "closed"),
+    }
+
+    def delete_resource(self, kind: str, record_id: str) -> dict[str, Any]:
+        """Soft-delete a resource by setting its status field to an inactive value."""
+        self._ensure_enabled()
+        kind = kind.strip().lower()
+        if kind not in self._DELETE_STATUS:
+            raise ValueError(f"Unsupported resource kind for deletion: {kind}")
+        table = kind  # table names match kind values
+        column, inactive_value = self._DELETE_STATUS[kind]
+        with self._lock, self._managed_connection() as conn:
+            row = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (record_id,)).fetchone()
+            if row is None:
+                return {"ok": False, "error": "not found"}
+            conn.execute(
+                f"UPDATE {table} SET {column} = ?, updated_at = ? WHERE id = ?",
+                (inactive_value, _utc_now_iso(), record_id),
+            )
+            conn.commit()
+        return {"ok": True, "id": record_id}
+
     def list_notes(self, *, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         self._ensure_enabled()
         query = "SELECT * FROM raw_notes"
