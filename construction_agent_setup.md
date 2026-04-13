@@ -36,6 +36,7 @@ Notes:
 ## 3. Startup Flow
 
 1. Start the bridge normally.
+   - If you only want the local operator console, set `WEB_ONLY_MODE=true` and start the env-aware entry point instead of Telegram polling.
 2. Open the local status page.
 3. If construction mode is enabled, open `/construction`.
 4. Generate today’s draft plan from the console or by chat.

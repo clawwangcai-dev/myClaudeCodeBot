@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -59,6 +59,76 @@ AUTO_APPROVAL_REPEAT_LIMIT = 2
 
 class TelegramAPIError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    store: SessionStore
+    workdirs: WorkdirStore
+    runner: BridgeRunner
+    media_handler: MediaHandler
+    runtime_state: BridgeRuntimeState
+    version_info: dict[str, str]
+    approvals: ApprovalState
+    chat_log: ChatLogStore
+    reminders: ReminderScheduler
+    construction_agent: ConstructionAgentService | None
+
+
+class LocalWebBridge:
+    can_edit_messages = False
+
+    def __init__(
+        self,
+        settings: Settings,
+        store: SessionStore,
+        runner: BridgeRunner,
+        media_handler: MediaHandler,
+        runtime_state: BridgeRuntimeState,
+        version_info: dict[str, str],
+        approvals: ApprovalState,
+        workdirs: WorkdirStore,
+        chat_log: ChatLogStore,
+        reminders: ReminderScheduler | None,
+        construction_agent: ConstructionAgentService | None,
+    ) -> None:
+        self._core = BridgeCore(
+            settings,
+            store,
+            runner,
+            media_handler,
+            runtime_state,
+            version_info,
+            approvals,
+            workdirs,
+            chat_log,
+            reminders,
+            construction_agent,
+            self,
+        )
+
+    @property
+    def core(self) -> BridgeCore:
+        return self._core
+
+    def help_channel_label(self) -> str:
+        return "Local web"
+
+    def send_message(self, conversation: ConversationRef, text: str, role: str = "system") -> SentMessage | None:
+        return None
+
+    def edit_message(
+        self,
+        conversation: ConversationRef,
+        message_id: str,
+        text: str,
+        role: str = "system",
+    ) -> SentMessage | None:
+        return None
+
+    def submit_web_prompt(self, chat_id: str | int, prompt: str, *, mirror_to_telegram: bool = True) -> None:
+        conversation = parse_conversation_key(chat_id)
+        self._core.submit_web_prompt(conversation, prompt, mirror_to_channel=False)
 
 
 class TelegramBot:
@@ -979,12 +1049,13 @@ def main() -> None:
         thread.start()
         threads.append(thread)
         LOGGER.info(
-            "Started bot worker name=%s provider=%s status_web=%s:%s enabled=%s",
+            "Started bot worker name=%s provider=%s status_web=%s:%s enabled=%s web_only=%s",
             settings.name,
             settings.provider,
             settings.status_web_host,
             settings.status_web_port,
             settings.status_web_enabled,
+            settings.web_only_mode,
         )
 
     for thread in threads:
@@ -992,6 +1063,42 @@ def main() -> None:
 
 
 def _run_single_bot(settings: Settings) -> None:
+    context = _build_runtime_context(settings)
+    if settings.web_only_mode:
+        _run_web_only(settings, context)
+        return
+
+    bot = TelegramBot(
+        settings,
+        context.store,
+        context.runner,
+        context.media_handler,
+        context.runtime_state,
+        context.version_info,
+        context.approvals,
+        context.workdirs,
+        context.chat_log,
+        context.reminders,
+        context.construction_agent,
+    )
+    if settings.status_web_enabled:
+        start_status_server(
+            settings,
+            context.store,
+            context.workdirs,
+            context.approvals,
+            context.runtime_state,
+            context.version_info,
+            context.chat_log,
+            context.construction_agent,
+            bot.submit_web_prompt,
+        )
+    if settings.whatsapp_enabled:
+        WhatsAppAdapter(settings, bot.core).start()
+    bot.run_forever()
+
+
+def _build_runtime_context(settings: Settings) -> RuntimeContext:
     store = SessionStore(settings.session_store_path)
     workdirs = WorkdirStore(settings.workdir_store_path)
     runner = build_runner(settings)
@@ -1003,34 +1110,61 @@ def _run_single_bot(settings: Settings) -> None:
     reminder_store = ReminderStore(settings.session_store_path.with_name("scheduled_reminders.json"))
     reminders = ReminderScheduler(settings, reminder_store)
     construction_agent = ConstructionAgentService(settings) if settings.construction_agent_enabled else None
-    bot = TelegramBot(
-        settings,
-        store,
-        runner,
-        media_handler,
-        runtime_state,
-        version_info,
-        approvals,
-        workdirs,
-        chat_log,
-        reminders,
-        construction_agent,
+    return RuntimeContext(
+        store=store,
+        workdirs=workdirs,
+        runner=runner,
+        media_handler=media_handler,
+        runtime_state=runtime_state,
+        version_info=version_info,
+        approvals=approvals,
+        chat_log=chat_log,
+        reminders=reminders,
+        construction_agent=construction_agent,
     )
-    if settings.status_web_enabled:
-        start_status_server(
-            settings,
-            store,
-            workdirs,
-            approvals,
-            runtime_state,
-            version_info,
-            chat_log,
-            construction_agent,
-            bot.submit_web_prompt,
-        )
-    if settings.whatsapp_enabled:
-        WhatsAppAdapter(settings, bot.core).start()
-    bot.run_forever()
+
+
+def _run_web_only(settings: Settings, context: RuntimeContext) -> None:
+    if not settings.status_web_enabled:
+        raise RuntimeError("WEB_ONLY_MODE requires STATUS_WEB_ENABLED=true")
+
+    bridge = LocalWebBridge(
+        settings,
+        context.store,
+        context.runner,
+        context.media_handler,
+        context.runtime_state,
+        context.version_info,
+        context.approvals,
+        context.workdirs,
+        context.chat_log,
+        context.reminders,
+        context.construction_agent,
+    )
+    server = start_status_server(
+        settings,
+        context.store,
+        context.workdirs,
+        context.approvals,
+        context.runtime_state,
+        context.version_info,
+        context.chat_log,
+        context.construction_agent,
+        bridge.submit_web_prompt,
+    )
+    LOGGER.info(
+        "Started web-only worker name=%s provider=%s status_web=%s:%s",
+        settings.name,
+        settings.provider,
+        settings.status_web_host,
+        settings.status_web_port,
+    )
+    try:
+        while True:
+            time.sleep(3600)
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":

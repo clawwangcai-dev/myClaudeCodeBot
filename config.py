@@ -52,6 +52,7 @@ class Settings:
     status_web_host: str
     status_web_port: int
     status_web_token: str | None
+    web_only_mode: bool
     whatsapp_enabled: bool
     whatsapp_verify_token: str | None
     whatsapp_access_token: str | None
@@ -99,8 +100,9 @@ def _build_settings(
     base_dir: Path,
     default_name: str,
 ) -> Settings:
+    web_only_mode = _parse_bool(values.get("WEB_ONLY_MODE"), default=False)
     token = values.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
+    if not token and not web_only_mode:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
 
     workdir = _resolve_path(values.get("CLAUDE_WORKDIR"), base_dir=base_dir, default=os.getcwd())
@@ -116,6 +118,13 @@ def _build_settings(
     edit_interval_raw = values.get("TELEGRAM_EDIT_INTERVAL_SECONDS", "1.0").strip() or "1.0"
     status_web_port_raw = values.get("STATUS_WEB_PORT", "8765").strip() or "8765"
     whatsapp_webhook_port_raw = values.get("WHATSAPP_WEBHOOK_PORT", "8877").strip() or "8877"
+    status_web_enabled = _parse_bool(values.get("STATUS_WEB_ENABLED"), default=True)
+    whatsapp_enabled = _parse_bool(values.get("WHATSAPP_ENABLED"), default=False)
+
+    if web_only_mode and not status_web_enabled:
+        raise RuntimeError("WEB_ONLY_MODE requires STATUS_WEB_ENABLED=true")
+    if web_only_mode and whatsapp_enabled:
+        raise RuntimeError("WEB_ONLY_MODE is incompatible with WHATSAPP_ENABLED=true")
 
     return Settings(
         name=values.get("BRIDGE_NAME", "").strip() or default_name,
@@ -166,11 +175,12 @@ def _build_settings(
         copilot_bin=values.get("COPILOT_BIN", "copilot").strip() or "copilot",
         copilot_model=values.get("COPILOT_MODEL", "").strip() or None,
         copilot_use_gh=_parse_bool(values.get("COPILOT_USE_GH"), default=False),
-        status_web_enabled=_parse_bool(values.get("STATUS_WEB_ENABLED"), default=True),
+        status_web_enabled=status_web_enabled,
         status_web_host=values.get("STATUS_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
         status_web_port=max(1, int(status_web_port_raw)),
         status_web_token=values.get("STATUS_WEB_TOKEN", "").strip() or None,
-        whatsapp_enabled=_parse_bool(values.get("WHATSAPP_ENABLED"), default=False),
+        web_only_mode=web_only_mode,
+        whatsapp_enabled=whatsapp_enabled,
         whatsapp_verify_token=values.get("WHATSAPP_VERIFY_TOKEN", "").strip() or None,
         whatsapp_access_token=values.get("WHATSAPP_ACCESS_TOKEN", "").strip() or None,
         whatsapp_phone_number_id=values.get("WHATSAPP_PHONE_NUMBER_ID", "").strip() or None,

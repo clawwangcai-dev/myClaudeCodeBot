@@ -131,6 +131,19 @@ python3 ~/Bau-Dirigent/install_service.py restart
 python3 ~/Bau-Dirigent/install_service.py status
 ```
 
+Web-only mode (local status/chat/construction UI without Telegram or WhatsApp bridging):
+
+```bash
+WEB_ONLY_MODE=true
+STATUS_WEB_ENABLED=true
+python3 ~/Bau-Dirigent/service_entry.py --env .env --web-only
+```
+
+Notes:
+- in web-only mode, `TELEGRAM_BOT_TOKEN` is not required
+- `/chat` works with local conversation keys like `web:local`
+- `/construction` still works when `CONSTRUCTION_AGENT_ENABLED=true`
+
 Linux manual service:
 
 ```bash
@@ -669,6 +682,19 @@ python3 ~/Bau-Dirigent/install_service.py install
 python3 ~/Bau-Dirigent/install_service.py restart
 python3 ~/Bau-Dirigent/install_service.py status
 ```
+
+纯网页模式（只开本地状态页 / 聊天页 / 建筑调度页，不启动 Telegram 或 WhatsApp 桥接）：
+
+```bash
+WEB_ONLY_MODE=true
+STATUS_WEB_ENABLED=true
+python3 ~/Bau-Dirigent/service_entry.py --env .env --web-only
+```
+
+说明：
+- 纯网页模式下不需要 `TELEGRAM_BOT_TOKEN`
+- `/chat` 可以直接使用 `web:local` 这样的本地会话 key
+- 如果 `CONSTRUCTION_AGENT_ENABLED=true`，`/construction` 也照常可用
 
 Linux 手动服务方式：
 

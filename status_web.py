@@ -301,6 +301,7 @@ def _status_payload(
         },
         "bridge": {
             "provider": settings.provider,
+            "web_only_mode": settings.web_only_mode,
             "workdir": str(settings.claude_workdir),
             "streaming": settings.claude_streaming,
             "approval_store_path": str(settings.approval_store_path),
@@ -570,6 +571,7 @@ def _render_status_html(payload: dict[str, Any]) -> str:
         <h2>Bridge</h2>
         <div class="meta">
           <div>Provider: <code>{html.escape(bridge['provider'])}</code></div>
+          <div>Web-only mode: <code>{html.escape(str(bridge.get('web_only_mode', False)))}</code></div>
           <div>Workdir: <code>{html.escape(bridge['workdir'])}</code></div>
           <div>Streaming: <code>{html.escape(str(bridge['streaming']))}</code></div>
           <div>Status web: <code>{html.escape(str(bridge['status_web']['host']))}:{bridge['status_web']['port']}</code></div>
@@ -1633,6 +1635,19 @@ def _render_construction_html(settings: Settings) -> str:
 
 def _render_chat_html(settings: Settings) -> str:
     title = html.escape(settings.name)
+    conversation_placeholder = "conversation key, e.g. web:local" if settings.web_only_mode else "conversation key, e.g. telegram:12345"
+    intro_text = (
+        "Enter a conversation key such as web:local to start a local-only chat."
+        if settings.web_only_mode
+        else "Pick an existing chat or enter a conversation key manually."
+    )
+    mirror_toggle_attrs = " disabled" if settings.web_only_mode else " checked"
+    mirror_toggle_label = (
+        "remote mirroring unavailable in web-only mode"
+        if settings.web_only_mode
+        else "mirror desktop message to remote chat"
+    )
+    default_conversation_key = "web:local" if settings.web_only_mode else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1811,19 +1826,19 @@ def _render_chat_html(settings: Settings) -> str:
     <aside>
       <h1>Local Chat</h1>
       <p class="subtle">Bridge: {title}</p>
-      <input id="conversationInput" placeholder="conversation key, e.g. telegram:12345">
+      <input id="conversationInput" placeholder="{html.escape(conversation_placeholder)}">
       <div class="chat-list" id="chatList"></div>
     </aside>
     <main>
       <section class="topbar">
         <h2 id="chatTitle">No chat selected</h2>
-        <p class="subtle" id="chatMeta">Pick an existing chat or enter a conversation key manually.</p>
+        <p class="subtle" id="chatMeta">{html.escape(intro_text)}</p>
         <div class="resume-strip" id="resumeStrip"></div>
       </section>
       <section class="messages" id="messages"></section>
       <form id="composer">
         <div class="controls">
-          <label><input type="checkbox" id="mirrorToggle" checked> mirror desktop message to remote chat</label>
+          <label><input type="checkbox" id="mirrorToggle"{mirror_toggle_attrs}> {html.escape(mirror_toggle_label)}</label>
           <button type="submit">Send</button>
         </div>
         <textarea id="promptInput" placeholder="Type a message for the shared chat..."></textarea>
@@ -1846,6 +1861,11 @@ def _render_chat_html(settings: Settings) -> str:
     const promptInputEl = document.getElementById("promptInput");
     const mirrorToggleEl = document.getElementById("mirrorToggle");
     const composerEl = document.getElementById("composer");
+    const defaultConversationKey = {json.dumps(default_conversation_key)};
+
+    if (defaultConversationKey) {{
+      conversationInputEl.value = defaultConversationKey;
+    }}
 
     function escapeHtml(value) {{
       return value

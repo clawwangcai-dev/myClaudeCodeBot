@@ -81,6 +81,7 @@ def _load_runtime_env(path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start the Telegram Claude bridge from an env file.")
     parser.add_argument("--env", required=True, help="Path to the bridge env file.")
+    parser.add_argument("--web-only", action="store_true", help="Start only the local web UI without Telegram bridging.")
     return parser.parse_args()
 
 
@@ -88,6 +89,8 @@ def main() -> None:
     args = parse_args()
     env_path = Path(args.env).expanduser().resolve()
     _load_runtime_env(env_path)
+    if args.web_only:
+        os.environ["WEB_ONLY_MODE"] = "true"
     bot_main()
 
 
